@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: ww3-global-command
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
