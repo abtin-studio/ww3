@@ -1,5 +1,5 @@
 import React from 'react';
-import { ShieldAlert, Plane, Rocket } from 'lucide-react';
+import { ShieldAlert, Plane, Rocket, Shield } from 'lucide-react';
 import { AlertPosture, CountryState } from '../../shared/types';
 
 interface RadarAlertModalProps {
@@ -13,16 +13,16 @@ export const RadarAlertModal: React.FC<RadarAlertModalProps> = ({
   secondsLeft,
   onSelectPosture,
 }) => {
-  if (!me.incomingAlertActive) return null;
+  if (!me.incomingAlertActive || me.alertPostureConfirmed) return null;
 
   return (
     <div className="fixed inset-0 z-50 bg-rose-950/80 backdrop-blur-md flex items-center justify-center p-4">
-      <div className="max-w-lg w-full bg-[#0c0810] border-2 border-rose-500 rounded-3xl p-5 sm:p-6 shadow-2xl shadow-rose-600/40 space-y-4">
+      <div className="max-w-lg w-full bg-[#0d0812] border-2 border-rose-500 rounded-3xl p-5 sm:p-6 shadow-2xl shadow-rose-600/40 space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5 text-rose-400">
             <ShieldAlert className="w-7 h-7 animate-bounce" />
             <h2 className="text-lg sm:text-xl font-black text-white">
-              🚨 آژیر رادار هشدار سریع کشور!
+              🚨 هشدار رادار پدافند کشور شما!
             </h2>
           </div>
           <span className="px-3 py-1 rounded-xl bg-rose-600 text-white font-mono font-black text-lg">
@@ -39,22 +39,20 @@ export const RadarAlertModal: React.FC<RadarAlertModalProps> = ({
         </div>
 
         <p className="text-xs text-slate-300">
-          فرمانده! کمتر از ۳۰ ثانیه تا اصابت باقی مانده است؛ واکنش اضطراری ستاد پدافند را انتخاب کنید:
+          به‌محض کلیک روی یکی از گزینه‌های زیر، فرمان دفاعی درجا اجرا می‌شود و بازی بدون معطلی ادامه می‌یابد:
         </p>
 
-        <div className="space-y-2.5">
+        <div className="space-y-2">
           <button
             type="button"
             onClick={() => onSelectPosture('MAX_INTERCEPT')}
-            className={`w-full p-3.5 rounded-2xl border text-right flex items-center justify-between transition ${
-              me.alertPosture === 'MAX_INTERCEPT'
-                ? 'bg-emerald-500/25 border-emerald-400 text-white'
-                : 'bg-[#14101c] border-slate-700 hover:border-emerald-400 text-slate-200'
-            }`}
+            className="w-full p-3 rounded-2xl border bg-[#14101c] border-emerald-500/40 hover:bg-emerald-500/20 text-right flex items-center justify-between transition"
           >
             <div>
-              <div className="font-black text-sm">🛡️ شلیک حداکثری تمام آتشبارهای پدافندی (+۲۲٪ رهگیری)</div>
-              <div className="text-[11px] text-slate-400">تخلیه موشک‌های رهگیر ذخیره برای شکار پرتابه‌ها در آسمان</div>
+              <div className="font-black text-xs sm:text-sm text-white">
+                🛡️ شلیک حداکثری پدافند هوایی (+۲۴٪ شانس رهگیری)
+              </div>
+              <div className="text-[11px] text-slate-400">بهترین گزینه برای نابود کردن موشک‌های دشمن در آسمان</div>
             </div>
             <span className="font-mono text-xs text-amber-300 font-bold shrink-0">$10B</span>
           </button>
@@ -62,37 +60,38 @@ export const RadarAlertModal: React.FC<RadarAlertModalProps> = ({
           <button
             type="button"
             onClick={() => onSelectPosture('SCRAMBLE_FIGHTERS')}
-            className={`w-full p-3.5 rounded-2xl border text-right flex items-center justify-between transition ${
-              me.alertPosture === 'SCRAMBLE_FIGHTERS'
-                ? 'bg-cyan-500/25 border-cyan-400 text-white'
-                : 'bg-[#14101c] border-slate-700 hover:border-cyan-400 text-slate-200'
-            }`}
+            className="w-full p-3 rounded-2xl border bg-[#14101c] border-cyan-500/40 hover:bg-cyan-500/20 text-right flex items-center justify-between transition"
           >
             <div>
-              <div className="font-black text-sm flex items-center gap-1.5">
-                <Plane className="w-4 h-4 text-cyan-400" /> بلند کردن فوری جنگنده‌های رهگیر (Scramble)
+              <div className="font-black text-xs sm:text-sm text-white flex items-center gap-1.5">
+                <Plane className="w-4 h-4 text-cyan-400" /> بلند کردن فوری جنگنده‌های رهگیر (+۱۸٪ دفاع)
               </div>
-              <div className="text-[11px] text-slate-400">+۱۶٪ دفاع هوایی با مصرف ۸ واحد ذخیره سوخت جت</div>
+              <div className="text-[11px] text-slate-400">رهگیری هوایی سریع با هزینه کمتر</div>
             </div>
-            <span className="font-mono text-xs text-cyan-300 font-bold shrink-0">8 نفت</span>
+            <span className="font-mono text-xs text-cyan-300 font-bold shrink-0">$8B</span>
           </button>
 
           <button
             type="button"
             onClick={() => onSelectPosture('COUNTER_SALVO')}
-            className={`w-full p-3.5 rounded-2xl border text-right flex items-center justify-between transition ${
-              me.alertPosture === 'COUNTER_SALVO'
-                ? 'bg-rose-500/30 border-rose-400 text-white'
-                : 'bg-[#14101c] border-slate-700 hover:border-rose-400 text-slate-200'
-            }`}
+            className="w-full p-3 rounded-2xl border bg-[#14101c] border-rose-500/50 hover:bg-rose-500/25 text-right flex items-center justify-between transition"
           >
             <div>
-              <div className="font-black text-sm flex items-center gap-1.5">
-                <Rocket className="w-4 h-4 text-rose-400" /> فرمان شلیک متقابل فوری به پایگاه مهاجم!
+              <div className="font-black text-xs sm:text-sm text-white flex items-center gap-1.5">
+                <Rocket className="w-4 h-4 text-rose-400" /> شلیک موشکی متقابل فوری به پایگاه مهاجم!
               </div>
-              <div className="text-[11px] text-slate-400">شلیک همزمان موشک‌های بالستیک تلافی‌جویانه پیش از اصابت</div>
+              <div className="text-[11px] text-slate-400">ضربه تلافی‌جویانه آنی در همین ماه به خاک کشور حمله‌کننده</div>
             </div>
             <span className="font-mono text-xs text-rose-300 font-bold shrink-0">$14B</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onSelectPosture('NORMAL')}
+            className="w-full p-2.5 rounded-2xl border bg-slate-900 border-slate-700 hover:bg-slate-800 text-center text-xs font-bold text-slate-300 flex items-center justify-center gap-1.5 transition"
+          >
+            <Shield className="w-4 h-4 text-slate-400" />
+            اتکا به پدافند فعلی کشور بدون هزینه اضافی (رایگان)
           </button>
         </div>
       </div>

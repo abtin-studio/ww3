@@ -14,7 +14,11 @@ export type CountryId =
   | 'KP'
   | 'KR'
   | 'EG'
-  | 'BR';
+  | 'BR'
+  | 'PK'
+  | 'UA'
+  | 'CA'
+  | 'AU';
 
 export type GMMode = 'AUTO' | 'HUMAN';
 
@@ -23,7 +27,6 @@ export type GamePhase =
   | 'PLANNING'
   | 'RADAR_ALERT'
   | 'GM_REVIEW'
-  | 'RESOLUTION_SHOWCASE'
   | 'FINISHED';
 
 export type DefconLevel = 5 | 4 | 3 | 2 | 1;
@@ -61,6 +64,24 @@ export interface InfrastructureSpec {
   maxLevel: number;
 }
 
+// 6 Level-Up National Progression Pillars (Lv.1 -> Lv.5)
+export type UpgradeTrack =
+  | 'AEROSPACE'
+  | 'AIR_DEFENSE'
+  | 'CYBER_AI'
+  | 'INTELLIGENCE'
+  | 'INDUSTRY'
+  | 'NUCLEAR';
+
+export interface UpgradeTrackSpec {
+  id: UpgradeTrack;
+  nameFa: string;
+  icon: string;
+  baseCostB: number;
+  maxLevel: number;
+  perLevelBonusFa: string;
+}
+
 export type WeaponCategory =
   | 'FIGHTER'
   | 'BOMBER'
@@ -84,7 +105,8 @@ export interface WeaponSpec {
   interceptBonus: number;
   stealth: number; // 0 - 100
   rangeKm: number;
-  batchLabelFa: string; // e.g. "۱ اسکادران (۱۲ فروند)" or "۱ آتشبار"
+  minAerospaceLevel?: number;
+  batchLabelFa: string;
   shortDescFa: string;
 }
 
@@ -94,68 +116,37 @@ export type AlertPosture =
   | 'SCRAMBLE_FIGHTERS'
   | 'COUNTER_SALVO';
 
-export type OrderKind =
-  | 'BUILD_INFRA'
-  | 'PRODUCE_WEAPON'
-  | 'FLIGHT_MISSION'
-  | 'MILITARY_STRIKE'
-  | 'CYBER_ATTACK'
-  | 'ESPIONAGE_OP'
-  | 'DOMESTIC_POLICY';
+// Streamlined, crystal-clear strategic operations queued for end-of-round clash
+export type OrderKind = 'MILITARY_OPERATION' | 'COVERT_OPERATION';
 
-export type FlightMissionType = 'CAP_PATROL' | 'RECON_FLIGHT' | 'AIRSTRIKE' | 'AIRLIFT';
-
-export type StrikeSubType =
-  | 'DRONE_SWARM'
-  | 'CRUISE_MISSILE'
-  | 'BALLISTIC_MISSILE'
-  | 'NAVAL_STRIKE'
-  | 'GROUND_OFFENSIVE'
-  | 'NUCLEAR_STRIKE';
+export type MilitaryOpType =
+  | 'SEAD_DRONE_SWARM' // Saturates & suppresses enemy air defense (-35% intercept) + damages radar
+  | 'PRECISION_STRIKE' // Missiles + Airstrikes on chosen sector (Refinery / Power / Military)
+  | 'FULL_INVASION' // Combined Armor + Naval + Air offensive: war loot ($B + Oil) & unit casualties on both sides!
+  | 'NUCLEAR_STRIKE'; // Strategic nuclear strike
 
 export type StrikeTargetSector =
   | 'REFINERY'
   | 'POWER_PLANT'
-  | 'RADAR_NETWORK'
-  | 'MILITARY_BASES'
-  | 'NUCLEAR_FACILITY';
+  | 'MILITARY_BASES';
 
-export type CyberAttackType =
-  | 'STUXNET_SABOTAGE'
-  | 'GRID_BLACKOUT'
-  | 'RADAR_BLIND'
-  | 'CENTRAL_BANK_HACK';
-
-export type EspionageOpType =
-  | 'DEEP_RECON'
-  | 'ASSASSINATE_SCIENTIST'
-  | 'ASSASSINATE_COMMANDER'
-  | 'COVERT_SABOTAGE'
-  | 'COUNTER_INTEL_SWEEP';
-
-export type DomesticPolicyType =
-  | 'WELFARE_PACKAGE'
-  | 'SECURITY_CRACKDOWN'
-  | 'NUCLEAR_PROGRAM_PUSH'
-  | 'TECH_RND_INVEST'
-  | 'TOGGLE_CHOKEPOINT';
+export type CovertOpType =
+  | 'SAT_RECON' // Unlocks full intel + gives +15% attack accuracy against target
+  | 'BLACKOUT_VIRUS' // Blinds radar (suppresses 18s radar warning!) + drops target powerGrid -25%
+  | 'TREASURY_HEIST' // Cyber central bank hack: steals $20B-$38B directly into your treasury!
+  | 'SABOTAGE_ASSASSINATION'; // Stuxnet + targeted assassination: -22% nuclear/tech & -20% military readiness!
 
 export interface GameOrder {
   id: string;
   actor: CountryId;
   kind: OrderKind;
-  targetCountry?: CountryId;
-  infraType?: InfrastructureType;
-  weaponId?: string;
-  quantity?: number;
-  flightType?: FlightMissionType;
-  strikeType?: StrikeSubType;
+  targetCountry: CountryId;
+  militaryType?: MilitaryOpType;
   targetSector?: StrikeTargetSector;
-  cyberType?: CyberAttackType;
-  espionageType?: EspionageOpType;
-  policyType?: DomesticPolicyType;
-  chokepointStatus?: ChokepointStatus;
+  covertType?: CovertOpType;
+  estimatedSuccessPct: number;
   summaryFa: string;
+  expectedImpactFa: string;
   costB: number;
 }
 
@@ -180,6 +171,44 @@ export interface RevealedSnapshot {
   topWeapons: { weaponId: string; count: number }[];
 }
 
+export interface BattleOutcomeLog {
+  id: string;
+  round: number;
+  attacker: CountryId;
+  defender: CountryId;
+  opTitleFa: string;
+  succeeded: boolean;
+  interceptRatePct: number;
+  summaryFa: string;
+  attackerLossesFa: string;
+  defenderLossesFa: string;
+  lootB: number;
+}
+
+export interface RoundSummaryForCountry {
+  roundResolved: number;
+  monthLabelFa: string;
+  netIncomeB: number;
+  autoSoldOilB: number;
+  netOilDelta: number;
+  approvalDelta: number;
+  myOperations: {
+    titleFa: string;
+    targetId: CountryId;
+    succeeded: boolean;
+    detailFa: string;
+  }[];
+  incomingAttacks: {
+    attackerId: CountryId;
+    titleFa: string;
+    repelled: boolean;
+    detailFa: string;
+  }[];
+  worldHighlightsFa: string[];
+}
+
+export type AIPersonality = 'SUPERPOWER' | 'REGIONAL_HAWK' | 'ECONOMIC_POWER' | 'FORTRESS';
+
 export interface CountryState {
   id: CountryId;
   isoNumeric: string;
@@ -191,21 +220,25 @@ export interface CountryState {
   agencyNameFa: string;
   agencyCode: string;
   isUNVetoMember: boolean;
+  aiPersonality: AIPersonality;
+  rivals: CountryId[];
   coordinates: [number, number]; // [lng, lat]
+  labelOffset: [number, number]; // [dx, dy] on SVG map so pins NEVER overlap!
   doctrineSummaryFa: string;
   strengthsFa: string[];
   weaknessesFa: string[];
 
   // Controller
-  playerId: string | null; // null = Smart AI
+  playerId: string | null; // null = Smart Living AI
   playerName: string | null;
   isOnline: boolean;
   isReady: boolean;
   isEliminated: boolean;
 
   // Economy & Resources
-  treasuryB: number; // Billions USD
-  gdpB: number; // Base economic power
+  treasuryB: number;
+  gdpB: number;
+  autoSellSurplus: boolean; // Auto-sells excess oil & gas each round!
   oilReserve: number;
   oilProduction: number;
   oilConsumption: number;
@@ -220,38 +253,46 @@ export interface CountryState {
   // Stability & Strategic Capabilities
   approval: number; // 0 - 100
   powerGrid: number; // 0 - 100
-  radarIntegrity: number; // 0 - 100 (resets/recovers per round unless bombed/hacked)
+  radarIntegrity: number; // 0 - 100
   cyberShield: number; // 0 - 100
   intelLevel: number; // 1 - 10
   techLevel: number; // 1 - 10
   nuclearProgress: number; // 0 - 100
   warheads: number;
-  commanderBuff: number; // -30 to +20 (affected by assassination / CAP)
+  commanderBuff: number; // -30 to +25
+  militaryXp: number; // Combat experience -> Veteran rank stars!
+
+  // 6 Level-Up National Progression Pillars (1 to 5)
+  upgrades: Record<UpgradeTrack, number>;
 
   // Infrastructures & Arsenal
   infrastructure: Record<InfrastructureType, number>;
   weapons: Record<string, number>;
 
-  // Diplomacy
+  // Diplomacy & Relations
   allies: CountryId[];
   sanctionedBy: CountryId[];
   airspaceOpenTo: CountryId[];
   airspaceClosedTo: CountryId[];
+  lastAttackedBy: CountryId | null;
 
   // Round Tactical State
   alertPosture: AlertPosture;
+  alertPostureCostPaidB: number;
+  alertPostureConfirmed: boolean;
   incomingAlertActive: boolean;
   incomingThreatsSummaryFa: string[];
   orders: GameOrder[];
   intelReports: IntelReport[];
   knownIntel: Partial<Record<CountryId, RevealedSnapshot>>;
+  lastRoundSummary: RoundSummaryForCountry | null;
 }
 
 export interface WorldMarket {
-  oilPriceUsd: number; // Baseline ~$82/bbl, spikes with Hormuz/wars!
-  gasPriceIndex: number; // Baseline 100
-  foodPriceIndex: number; // Baseline 100
-  globalTension: number; // 0 - 100 -> drives DEFCON
+  oilPriceUsd: number;
+  gasPriceIndex: number;
+  foodPriceIndex: number;
+  globalTension: number;
 }
 
 export interface NewsItem {
@@ -259,7 +300,7 @@ export interface NewsItem {
   round: number;
   monthLabelFa: string;
   timestamp: number;
-  agencyFa: string; // e.g., "رویترز جهانی", "الجزیره فوری", "گزارش شورای امنیت", "راوی بازی"
+  agencyFa: string;
   category: 'WAR' | 'DIPLOMACY' | 'ECONOMY' | 'CYBER' | 'ESPIONAGE' | 'WORLD_EVENT' | 'GM';
   breaking: boolean;
   headlineFa: string;
@@ -274,12 +315,19 @@ export interface MapVisualEvent {
   to: [number, number];
   fromCountry: CountryId;
   toCountry: CountryId;
-  kind: 'FLIGHT' | 'MISSILE' | 'DRONE' | 'CYBER' | 'NAVAL' | 'NUCLEAR' | 'TRADE' | 'RECON';
+  kind: 'FLIGHT' | 'MISSILE' | 'DRONE' | 'CYBER' | 'INVASION' | 'NUCLEAR' | 'TRADE' | 'RECON';
   labelFa: string;
   intercepted?: boolean;
 }
 
-export type TradeResourceKind = 'OIL' | 'GAS' | 'FOOD' | 'URANIUM' | 'WEAPON' | 'ALLIANCE' | 'AIRSPACE' | 'LIFT_SANCTION';
+export type TradeResourceKind =
+  | 'OIL'
+  | 'GAS'
+  | 'FOOD'
+  | 'URANIUM'
+  | 'WEAPON'
+  | 'ALLIANCE'
+  | 'LIFT_SANCTION';
 
 export interface TradeOffer {
   id: string;
@@ -289,7 +337,7 @@ export interface TradeOffer {
   offerType: TradeResourceKind;
   amount: number;
   weaponId?: string;
-  priceB: number; // Money paid by buyer to seller (positive = 'to' pays 'from' if selling, etc.)
+  priceB: number;
   direction: 'SELL' | 'BUY' | 'PACT';
   noteFa: string;
   status: 'PENDING' | 'ACCEPTED' | 'REJECTED';
@@ -330,8 +378,8 @@ export interface LobbyPlayer {
 
 export interface GameSettings {
   gmMode: GMMode;
-  maxRounds: number; // e.g., 12, 18, 24 months
-  planningTimerSec: number; // 0 = untimed (advance when all ready), or 180 / 300 / 480
+  maxRounds: number;
+  planningTimerSec: number;
   enableAINations: boolean;
 }
 
@@ -341,7 +389,7 @@ export interface GameRoomState {
   createdAt: number;
   phase: GamePhase;
   round: number;
-  calendarLabelFa: string; // e.g. "فروردین ۱۴۰۶ / ژانویه ۲۰۲۷"
+  calendarLabelFa: string;
   phaseEndsAt: number | null;
   defcon: DefconLevel;
   settings: GameSettings;
@@ -350,6 +398,7 @@ export interface GameRoomState {
   chokepoints: Record<ChokepointId, ChokepointState>;
   market: WorldMarket;
   news: NewsItem[];
+  battles: BattleOutcomeLog[];
   visualEvents: MapVisualEvent[];
   trades: TradeOffer[];
   messages: ChatMessage[];

@@ -1,7 +1,6 @@
 import React from 'react';
 import { CountryId } from '../../shared/types';
 
-// Crisp cross-platform SVG flags so Windows (which lacks Unicode flag emojis) renders authentic flags!
 const FLAG_COLORS: Record<CountryId, [string, string, string]> = {
   IR: ['#239f40', '#ffffff', '#da0000'],
   US: ['#b22234', '#ffffff', '#3c3b6e'],
@@ -14,11 +13,15 @@ const FLAG_COLORS: Record<CountryId, [string, string, string]> = {
   TR: ['#e30a17', '#ffffff', '#e30a17'],
   SA: ['#006c35', '#ffffff', '#006c35'],
   IN: ['#ff9933', '#ffffff', '#138808'],
+  PK: ['#01411c', '#ffffff', '#01411c'],
+  UA: ['#005bbb', '#ffd500', '#ffd500'],
   JP: ['#ffffff', '#bc002d', '#ffffff'],
   KP: ['#024fa2', '#ed1c27', '#024fa2'],
   KR: ['#ffffff', '#cd2e3a', '#0047a0'],
   EG: ['#ce1126', '#ffffff', '#111111'],
   BR: ['#009c3b', '#ffdf00', '#002776'],
+  CA: ['#ff0000', '#ffffff', '#ff0000'],
+  AU: ['#00008b', '#ffffff', '#ff0000'],
 };
 
 export const SHORT_NAME_FA: Record<CountryId, string> = {
@@ -33,11 +36,15 @@ export const SHORT_NAME_FA: Record<CountryId, string> = {
   TR: 'ترکیه',
   SA: 'عربستان',
   IN: 'هند',
+  PK: 'پاکستان',
+  UA: 'اوکراین',
   JP: 'ژاپن',
   KP: 'کره‌شمالی',
   KR: 'کره‌جنوبی',
   EG: 'مصر',
   BR: 'برزیل',
+  CA: 'کانادا',
+  AU: 'استرالیا',
 };
 
 interface CountryFlagProps {
@@ -59,6 +66,37 @@ export const CountryFlag: React.FC<CountryFlagProps> = ({ countryId, size = 'md'
       <svg viewBox="0 0 30 20" className={`${dims} shrink-0 inline-block border border-white/20 shadow-sm`}>
         <rect width="30" height="20" fill="#ffffff" />
         <circle cx="15" cy="10" r="5.5" fill="#bc002d" />
+      </svg>
+    );
+  }
+
+  if (countryId === 'UA') {
+    return (
+      <svg viewBox="0 0 30 20" className={`${dims} shrink-0 inline-block border border-white/20 shadow-sm`}>
+        <rect width="30" height="10" y="0" fill="#005bbb" />
+        <rect width="30" height="10" y="10" fill="#ffd500" />
+      </svg>
+    );
+  }
+
+  if (countryId === 'PK') {
+    return (
+      <svg viewBox="0 0 30 20" className={`${dims} shrink-0 inline-block border border-white/20 shadow-sm`}>
+        <rect width="7" height="20" x="0" fill="#ffffff" />
+        <rect width="23" height="20" x="7" fill="#01411c" />
+        <circle cx="18.5" cy="10" r="4.5" fill="#ffffff" />
+        <circle cx="20" cy="9" r="4" fill="#01411c" />
+      </svg>
+    );
+  }
+
+  if (countryId === 'CA') {
+    return (
+      <svg viewBox="0 0 30 20" className={`${dims} shrink-0 inline-block border border-white/20 shadow-sm`}>
+        <rect width="8" height="20" x="0" fill="#ff0000" />
+        <rect width="14" height="20" x="8" fill="#ffffff" />
+        <rect width="8" height="20" x="22" fill="#ff0000" />
+        <circle cx="15" cy="10" r="3.8" fill="#ff0000" />
       </svg>
     );
   }
@@ -92,14 +130,18 @@ export const CountryFlag: React.FC<CountryFlagProps> = ({ countryId, size = 'md'
     );
   }
 
-  if (countryId === 'US') {
+  if (countryId === 'US' || countryId === 'AU') {
     return (
       <svg viewBox="0 0 30 20" className={`${dims} shrink-0 inline-block border border-white/20 shadow-sm`}>
-        <rect width="30" height="20" fill="#b22234" />
-        <rect width="30" height="3" y="3" fill="#ffffff" />
-        <rect width="30" height="3" y="9" fill="#ffffff" />
-        <rect width="30" height="3" y="15" fill="#ffffff" />
-        <rect width="13" height="11" x="0" y="0" fill="#3c3b6e" />
+        <rect width="30" height="20" fill={countryId === 'AU' ? '#00008b' : '#b22234'} />
+        {countryId === 'US' && (
+          <>
+            <rect width="30" height="3" y="3" fill="#ffffff" />
+            <rect width="30" height="3" y="9" fill="#ffffff" />
+            <rect width="30" height="3" y="15" fill="#ffffff" />
+          </>
+        )}
+        <rect width="13" height="11" x="0" y="0" fill={countryId === 'AU' ? '#c8102e' : '#3c3b6e'} />
       </svg>
     );
   }

@@ -12,7 +12,9 @@ class TacticalAudio {
 
   private ensureCtx(): AudioContext | null {
     if (this.muted || typeof window === 'undefined') return null;
-    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!AudioCtx) return null;
     if (!this.ctx) {
       this.ctx = new AudioCtx();
@@ -43,14 +45,14 @@ class TacticalAudio {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(1180, ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.18);
-    gain.gain.setValueAtTime(0.06, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.22);
+    osc.frequency.setValueAtTime(1080, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(780, ctx.currentTime + 0.16);
+    gain.gain.setValueAtTime(0.045, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
     osc.connect(gain);
     gain.connect(ctx.destination);
     osc.start();
-    osc.stop(ctx.currentTime + 0.23);
+    osc.stop(ctx.currentTime + 0.21);
   }
 
   public playOrderConfirm(): void {
@@ -59,52 +61,69 @@ class TacticalAudio {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = 'triangle';
-    osc.frequency.setValueAtTime(440, ctx.currentTime);
-    osc.frequency.setValueAtTime(660, ctx.currentTime + 0.07);
-    gain.gain.setValueAtTime(0.08, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
+    osc.frequency.setValueAtTime(460, ctx.currentTime);
+    osc.frequency.setValueAtTime(680, ctx.currentTime + 0.06);
+    gain.gain.setValueAtTime(0.065, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
     osc.connect(gain);
     gain.connect(ctx.destination);
     osc.start();
-    osc.stop(ctx.currentTime + 0.21);
+    osc.stop(ctx.currentTime + 0.19);
+  }
+
+  public playLevelUp(): void {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    [523.25, 659.25, 783.99, 1046.5].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      const t = ctx.currentTime + i * 0.065;
+      osc.frequency.setValueAtTime(freq, t);
+      gain.gain.setValueAtTime(0.07, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.23);
+    });
   }
 
   public playNewsChime(): void {
     const ctx = this.ensureCtx();
     if (!ctx) return;
-    const notes = [523.25, 659.25, 783.99];
-    notes.forEach((freq, i) => {
+    [440, 554.37, 659.25].forEach((freq, i) => {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = 'sine';
-      const t = ctx.currentTime + i * 0.09;
+      const t = ctx.currentTime + i * 0.08;
       osc.frequency.setValueAtTime(freq, t);
-      gain.gain.setValueAtTime(0.08, t);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+      gain.gain.setValueAtTime(0.06, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
       osc.connect(gain);
       gain.connect(ctx.destination);
       osc.start(t);
-      osc.stop(t + 0.26);
+      osc.stop(t + 0.23);
     });
   }
 
+  // Clean two-tone tactical radar warning (not harsh sawtooth!)
   public playRadarSiren(): void {
     const ctx = this.ensureCtx();
     if (!ctx) return;
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 2; i++) {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-      osc.type = 'sawtooth';
-      const start = ctx.currentTime + i * 0.42;
-      osc.frequency.setValueAtTime(420, start);
-      osc.frequency.linearRampToValueAtTime(780, start + 0.22);
-      osc.frequency.linearRampToValueAtTime(420, start + 0.38);
-      gain.gain.setValueAtTime(0.09, start);
-      gain.gain.exponentialRampToValueAtTime(0.002, start + 0.4);
+      osc.type = 'sine';
+      const start = ctx.currentTime + i * 0.36;
+      osc.frequency.setValueAtTime(620, start);
+      osc.frequency.setValueAtTime(880, start + 0.16);
+      gain.gain.setValueAtTime(0.085, start);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.33);
       osc.connect(gain);
       gain.connect(ctx.destination);
       osc.start(start);
-      osc.stop(start + 0.41);
+      osc.stop(start + 0.34);
     }
   }
 }

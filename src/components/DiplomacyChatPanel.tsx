@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Send, Globe, Lock, Check, X, Scale } from 'lucide-react';
 import { WEAPONS_CATALOG } from '../../shared/realWorldData';
 import { CountryId, GameRoomState } from '../../shared/types';
+import { CountryFlag } from './CountryFlag';
 
 interface DiplomacyChatPanelProps {
   room: GameRoomState;
@@ -193,8 +194,8 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
                     : 'text-slate-300 hover:bg-slate-800/60'
                 }`}
               >
-                <span className="truncate">
-                  {c.flag} {c.nameFa} {c.playerName ? `(${c.playerName})` : ''}
+                <span className="truncate flex items-center gap-1.5">
+                  <CountryFlag countryId={c.id} size="sm" /> {c.nameFa} {c.playerName ? `(${c.playerName})` : ''}
                 </span>
                 {c.playerId ? (
                   <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />

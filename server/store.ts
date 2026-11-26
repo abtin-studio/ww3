@@ -20,7 +20,8 @@ export class RoomStore {
       const parsed = JSON.parse(raw) as Record<string, GameRoomState>;
       const cutoff = Date.now() - 1000 * 60 * 60 * 72; // Keep lobbies from last 72h
       for (const [code, room] of Object.entries(parsed)) {
-        if (room.createdAt >= cutoff) {
+        // Ensure compatibility with v2.0 room schema
+        if (room.createdAt >= cutoff && room.countries?.IR?.upgrades) {
           // Mark sockets disconnected on fresh boot until clients reconnect
           for (const p of room.players) p.connected = false;
           for (const c of Object.values(room.countries)) c.isOnline = false;

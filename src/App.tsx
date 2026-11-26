@@ -12,18 +12,25 @@ import {
   Clock,
   Share2,
   LogOut,
+  Radio,
 } from 'lucide-react';
 import { computeEconomyProjection } from '../shared/advisor';
 import {
   AlertPosture,
+  ChokepointStatus,
   CountryId,
-  GameOrder,
+  CovertOpType,
   GameRoomState,
   GameSettings,
   GMMode,
+  InfrastructureType,
+  MilitaryOpType,
+  StrikeTargetSector,
   TradeResourceKind,
   UNResolution,
+  UpgradeTrack,
 } from '../shared/types';
+import { CountryFlag } from './components/CountryFlag';
 import { DiplomacyChatPanel } from './components/DiplomacyChatPanel';
 import { GMControlPanel } from './components/GMControlPanel';
 import { LandingScreen } from './components/LandingScreen';
@@ -31,9 +38,9 @@ import { LobbyScreen } from './components/LobbyScreen';
 import { MyCountryPanel } from './components/MyCountryPanel';
 import { NewsAndRankingsPanel } from './components/NewsAndRankingsPanel';
 import { RadarAlertModal } from './components/RadarAlertModal';
+import { RoundSummaryModal } from './components/RoundSummaryModal';
 import { DrawerTab, TargetCountryDrawer } from './components/TargetCountryDrawer';
 import { WorldMap } from './components/WorldMap';
-import { CountryFlag } from './components/CountryFlag';
 import { sound } from './utils/sound';
 
 function getOrCreatePlayerId(): string {
@@ -74,7 +81,6 @@ export const App: React.FC = () => {
   const [muted, setMuted] = useState(() => sound.isMuted());
   const [nowMs, setNowMs] = useState(() => Date.now());
 
-  // Navigation & Drawer State
   const [mobileTab, setMobileTab] = useState<MainTab>('MAP');
   const [desktopSideTab, setDesktopSideTab] = useState<Exclude<MainTab, 'MAP'>>('COUNTRY');
   const [drawerTarget, setDrawerTarget] = useState<{ countryId: CountryId; tab: DrawerTab } | null>(null);
@@ -84,7 +90,7 @@ export const App: React.FC = () => {
     setToast({ text, tone });
     setTimeout(() => {
       setToast((prev) => (prev?.text === text ? null : prev));
-    }, 4000);
+    }, 3800);
   };
 
   useEffect(() => {
@@ -111,6 +117,8 @@ export const App: React.FC = () => {
     socket.on('room:sound', (ev: { type: string }) => {
       if (ev.type === 'RADAR_SIREN') {
         sound.playRadarSiren();
+      } else if (ev.type === 'TACTICAL_PING') {
+        sound.playRadarPing();
       } else if (ev.type === 'ROUND_RESOLVED' || ev.type === 'GM_CHIME' || ev.type === 'GAME_START') {
         sound.playNewsChime();
       }
@@ -260,7 +268,6 @@ export const App: React.FC = () => {
     );
   }
 
-  // === IN-GAME WAR ROOM ===
   const latestBreaking = room.news[0];
   const secondsLeft = room.phaseEndsAt ? Math.max(0, Math.ceil((room.phaseEndsAt - nowMs) / 1000)) : null;
   const humanCountries = Object.values(room.countries).filter((c) => c.playerId !== null);
@@ -274,19 +281,25 @@ export const App: React.FC = () => {
       setMobileTab('COUNTRY');
       setDesktopSideTab('COUNTRY');
     } else {
-      setDrawerTarget({ countryId: cid, tab: 'DIPLOMACY' });
+      setDrawerTarget({ countryId: cid, tab: 'WAR' });
     }
   };
 
-  const handleQueueOrder = (draft: Partial<GameOrder>) => {
+  const handleQueueOrder = (draft: {
+    kind: 'MILITARY_OPERATION' | 'COVERT_OPERATION';
+    targetCountry: CountryId;
+    militaryType?: MilitaryOpType;
+    targetSector?: StrikeTargetSector;
+    covertType?: CovertOpType;
+  }) => {
     socketRef.current?.emit(
       'game:queue_order',
       draft,
       (res: { ok: boolean; errorFa?: string }) => {
         if (!res.ok) {
-          showToast(res.errorFa || 'ثبت فرمان ممکن نشد', 'warn');
+          showToast(res.errorFa || 'ثبت عملیات ممکن نشد', 'warn');
         } else {
-          showToast('فرمان استراتژیک در لیست عملیات این ماه ثبت شد ✓', 'ok');
+          showToast('🎯 عملیات با موفقیت ثبت شد و روی نقشه قفل گردید!', 'ok');
           setDrawerTarget(null);
         }
       }
@@ -307,7 +320,7 @@ export const App: React.FC = () => {
       payload,
       (res: { ok: boolean; status?: string; messageFa?: string }) => {
         showToast(
-          res.messageFa || (res.ok ? 'پیشنهاد ارسال شد' : 'پیشنهاد رد شد'),
+          res.messageFa || (res.ok ? 'قرارداد ارسال شد' : 'پیشنهاد رد شد'),
           res.ok ? 'ok' : 'warn'
         );
       }
@@ -325,31 +338,48 @@ export const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-[#040811] text-slate-100 flex flex-col pb-16 lg:pb-0">
-      {/* Toast Notification */}
+      {/* Toast Feedback */}
       {toast && (
-        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-2xl shadow-2xl border text-xs sm:text-sm font-bold backdrop-blur-md transition-all bg-[#0b1528]/95 border-slate-600">
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-2xl shadow-2xl border text-xs sm:text-sm font-bold backdrop-blur-md bg-[#0b1528]/95 border-slate-600">
           <span className={toast.tone === 'ok' ? 'text-emerald-300' : 'text-rose-300'}>
             {toast.text}
           </span>
         </div>
       )}
 
-      {/* 30-Second Emergency Radar Intercept Modal */}
-      {room.phase === 'RADAR_ALERT' && myCountry && myCountry.incomingAlertActive && (
+      {/* Cinematic End-of-Month Summary Modal! */}
+      {room.phase === 'PLANNING' && myCountry?.lastRoundSummary && (
+        <RoundSummaryModal
+          room={room}
+          summary={myCountry.lastRoundSummary}
+          onDismiss={() => socketRef.current?.emit('game:dismiss_summary')}
+        />
+      )}
+
+      {/* Targeted 18-Second Emergency Radar Intercept Modal (ONLY for attacked player!) */}
+      {room.phase === 'RADAR_ALERT' && myCountry && myCountry.incomingAlertActive && !myCountry.alertPostureConfirmed && (
         <RadarAlertModal
           me={myCountry}
-          secondsLeft={secondsLeft ?? 30}
+          secondsLeft={secondsLeft ?? 18}
           onSelectPosture={(posture: AlertPosture) => {
             socketRef.current?.emit(
               'game:alert_posture',
               posture,
               (res: { ok: boolean; errorFa?: string }) => {
                 if (!res.ok && res.errorFa) showToast(res.errorFa, 'warn');
-                else showToast('دستور دفاع اضطراری به پدافند مخابره شد!', 'ok');
+                else showToast('🛡️ واکنش پدافندی ثبت شد؛ در حال اجرای نبرد!', 'ok');
               }
             );
           }}
         />
+      )}
+
+      {/* Clear Banner for Non-Targeted Players During Radar Alert so Nobody Thinks Game Froze! */}
+      {room.phase === 'RADAR_ALERT' && (!myCountry || !myCountry.incomingAlertActive || myCountry.alertPostureConfirmed) && (
+        <div className="bg-rose-950/70 border-b border-rose-500/50 px-4 py-2 text-center text-xs sm:text-sm font-bold text-rose-200 flex items-center justify-center gap-2">
+          <Radio className="w-4 h-4 animate-ping text-rose-400" />
+          رادار کشور هدف پرتابه‌ها را شناسایی کرد! در انتظار واکنش پدافندی فرمانده هدف ({secondsLeft ?? 15} ثانیه)...
+        </div>
       )}
 
       {/* Campaign Finished Banner */}
@@ -359,10 +389,9 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* Top Breaking News Ticker + DEFCON + Ready Header */}
+      {/* Top Command HUD */}
       <header className="bg-[#070e1c] border-b border-slate-800 px-3 sm:px-5 py-2.5 space-y-2 sticky top-0 z-30">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          {/* Left/Right Identity & Round */}
           <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
             <span className={`px-2.5 py-1 rounded-lg font-mono font-black text-xs ${defconBadgeColor}`}>
               DEFCON {room.defcon}
@@ -374,14 +403,13 @@ export const App: React.FC = () => {
             <span className="hidden sm:inline-block text-xs text-amber-300 font-mono bg-amber-500/10 border border-amber-500/25 px-2.5 py-0.5 rounded-lg">
               🛢️ نفت جهانی: ${room.market.oilPriceUsd}
             </span>
-            {secondsLeft !== null && (
+            {secondsLeft !== null && room.phase === 'PLANNING' && (
               <span className="px-2.5 py-0.5 rounded-lg bg-rose-500/15 border border-rose-500/40 text-rose-300 font-mono text-xs flex items-center gap-1">
                 <Clock className="w-3.5 h-3.5" /> {secondsLeft}s
               </span>
             )}
           </div>
 
-          {/* Right Controls: Ready Button + Share + Mute */}
           <div className="flex items-center gap-2">
             {myCountry && room.phase === 'PLANNING' && (
               <button
@@ -390,7 +418,7 @@ export const App: React.FC = () => {
                   sound.playOrderConfirm();
                   socketRef.current?.emit('game:toggle_ready', !myCountry.isReady);
                 }}
-                className={`px-3.5 py-1.5 rounded-xl font-black text-xs sm:text-sm flex items-center gap-1.5 transition shadow ${
+                className={`px-4 py-1.5 rounded-xl font-black text-xs sm:text-sm flex items-center gap-1.5 transition shadow ${
                   myCountry.isReady
                     ? 'bg-emerald-500/25 border border-emerald-400 text-emerald-200'
                     : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
@@ -399,13 +427,13 @@ export const App: React.FC = () => {
                 <CheckCircle2 className="w-4 h-4" />
                 {myCountry.isReady
                   ? `آماده‌ام (${readyHumansCount}/${humanCountries.length})`
-                  : `پایان نوبت من (${readyHumansCount}/${humanCountries.length})`}
+                  : `پایان ماه و اجرای عملیات (${readyHumansCount}/${humanCountries.length})`}
               </button>
             )}
 
             <button
               type="button"
-              title="کپی کد لابی"
+              title="کپی لینک دعوت لابی"
               onClick={() => {
                 const link = `${window.location.origin}${window.location.pathname}?room=${room.roomCode}`;
                 navigator.clipboard.writeText(link);
@@ -419,7 +447,7 @@ export const App: React.FC = () => {
 
             <button
               type="button"
-              title="قطع/وصل صدای اتاق جنگ"
+              title="قطع/وصل صدا"
               onClick={() => setMuted(sound.toggleMute())}
               className="p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-300"
             >
@@ -437,7 +465,7 @@ export const App: React.FC = () => {
           </div>
         </div>
 
-        {/* Live Breaking News Strip */}
+        {/* Breaking News Strip */}
         {latestBreaking && (
           <div className="px-3 py-1.5 rounded-xl bg-[#040914] border border-slate-800/90 flex items-center gap-2 text-xs overflow-hidden">
             <span className="px-2 py-0.5 rounded bg-rose-600 text-white font-black text-[10px] shrink-0">
@@ -497,9 +525,9 @@ export const App: React.FC = () => {
         )}
       </header>
 
-      {/* Main Responsive Workspace */}
-      <main className="flex-1 max-w-[1600px] w-full mx-auto p-3 sm:p-4 grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* World Map Column (Always visible on Desktop, or when MAP tab active on Mobile) */}
+      {/* Main Workspace */}
+      <main className="flex-1 max-w-[1620px] w-full mx-auto p-3 sm:p-4 grid grid-cols-1 lg:grid-cols-12 gap-4">
+        {/* Interactive World Map */}
         <div
           className={`lg:col-span-7 flex flex-col gap-3 ${
             mobileTab === 'MAP' ? 'block' : 'hidden lg:flex'
@@ -515,30 +543,29 @@ export const App: React.FC = () => {
           </div>
         </div>
 
-        {/* Right Command Column (Desktop Side Tabs / Mobile Selected Tab) */}
+        {/* Command Side Column */}
         <div
           className={`lg:col-span-5 flex flex-col gap-3 ${
             mobileTab === 'MAP' ? 'hidden lg:flex' : 'flex'
           }`}
         >
-          {/* Desktop Tab Switcher */}
           <div className="hidden lg:grid grid-cols-4 gap-1.5 bg-[#08101f] p-1.5 rounded-2xl border border-slate-800 text-xs font-bold">
             {!isGM ? (
               <button
                 type="button"
                 onClick={() => setDesktopSideTab('COUNTRY')}
                 className={`py-2.5 rounded-xl flex items-center justify-center gap-1.5 ${
-                  desktopSideTab === 'COUNTRY' ? 'bg-emerald-500 text-slate-950' : 'text-slate-300'
+                  desktopSideTab === 'COUNTRY' ? 'bg-emerald-500 text-slate-950 font-black' : 'text-slate-300'
                 }`}
               >
-                <Building2 className="w-4 h-4" /> کشور و ارتش
+                <Building2 className="w-4 h-4" /> کشور و لول‌آپ
               </button>
             ) : (
               <button
                 type="button"
                 onClick={() => setDesktopSideTab('GM')}
                 className={`py-2.5 rounded-xl flex items-center justify-center gap-1.5 ${
-                  desktopSideTab === 'GM' ? 'bg-amber-400 text-slate-950' : 'text-amber-300'
+                  desktopSideTab === 'GM' ? 'bg-amber-400 text-slate-950 font-black' : 'text-amber-300'
                 }`}
               >
                 <Mic className="w-4 h-4" /> اتاق راوی
@@ -548,7 +575,7 @@ export const App: React.FC = () => {
               type="button"
               onClick={() => setDesktopSideTab('DIPLOMACY')}
               className={`py-2.5 rounded-xl flex items-center justify-center gap-1.5 relative ${
-                desktopSideTab === 'DIPLOMACY' ? 'bg-cyan-500 text-slate-950' : 'text-slate-300'
+                desktopSideTab === 'DIPLOMACY' ? 'bg-cyan-500 text-slate-950 font-black' : 'text-slate-300'
               }`}
             >
               <MessageSquare className="w-4 h-4" /> دیپلماسی و چت
@@ -562,21 +589,65 @@ export const App: React.FC = () => {
               type="button"
               onClick={() => setDesktopSideTab('NEWS')}
               className={`py-2.5 rounded-xl flex items-center justify-center gap-1.5 col-span-2 ${
-                desktopSideTab === 'NEWS' ? 'bg-rose-500 text-white' : 'text-slate-300'
+                desktopSideTab === 'NEWS' ? 'bg-rose-500 text-white font-black' : 'text-slate-300'
               }`}
             >
-              <Tv className="w-4 h-4" /> اخبار، بولتن اطلاعاتی و رتبه‌ها
+              <Tv className="w-4 h-4" /> اخبار جهان و رتبه‌ها
             </button>
           </div>
 
-          {/* Active Side Panel Content */}
           <div className="lg:h-[calc(100vh-265px)] lg:overflow-y-auto pr-0.5">
             {((mobileTab === 'COUNTRY' || (mobileTab === 'MAP' && desktopSideTab === 'COUNTRY')) &&
               myCountryId && (
                 <MyCountryPanel
                   room={room}
                   countryId={myCountryId}
-                  onQueueOrder={handleQueueOrder}
+                  onInstantUpgrade={(track: UpgradeTrack) =>
+                    socketRef.current?.emit(
+                      'game:instant_upgrade',
+                      track,
+                      (res: { ok: boolean; messageFa?: string; errorFa?: string }) => {
+                        showToast(res.messageFa || res.errorFa || '', res.ok ? 'ok' : 'warn');
+                      }
+                    )
+                  }
+                  onInstantInfra={(infraType: InfrastructureType) =>
+                    socketRef.current?.emit(
+                      'game:instant_infra',
+                      infraType,
+                      (res: { ok: boolean; messageFa?: string; errorFa?: string }) => {
+                        showToast(res.messageFa || res.errorFa || '', res.ok ? 'ok' : 'warn');
+                      }
+                    )
+                  }
+                  onInstantWeapon={(weaponId, quantity) =>
+                    socketRef.current?.emit(
+                      'game:instant_weapon',
+                      { weaponId, quantity },
+                      (res: { ok: boolean; messageFa?: string; errorFa?: string }) => {
+                        showToast(res.messageFa || res.errorFa || '', res.ok ? 'ok' : 'warn');
+                      }
+                    )
+                  }
+                  onSpotTrade={(resource, mode) =>
+                    socketRef.current?.emit(
+                      'game:spot_trade',
+                      { resource, mode },
+                      (res: { ok: boolean; messageFa?: string; errorFa?: string }) => {
+                        showToast(res.messageFa || res.errorFa || '', res.ok ? 'ok' : 'warn');
+                      }
+                    )
+                  }
+                  onToggleAutoSell={() => socketRef.current?.emit('game:toggle_autosell')}
+                  onSetChokepoint={(st: ChokepointStatus) =>
+                    socketRef.current?.emit(
+                      'game:set_chokepoint',
+                      st,
+                      (res: { ok: boolean; messageFa?: string; errorFa?: string }) => {
+                        showToast(res.messageFa || res.errorFa || '', res.ok ? 'ok' : 'warn');
+                      }
+                    )
+                  }
                   onCancelOrder={(orderId) => socketRef.current?.emit('game:cancel_order', orderId)}
                   onProposeTrade={handleProposeTrade}
                   onOpenCountryDrawer={(cid, tab) => setDrawerTarget({ countryId: cid, tab })}
@@ -611,6 +682,7 @@ export const App: React.FC = () => {
                     { offerId, accept },
                     (res: { ok: boolean; errorFa?: string }) => {
                       if (!res.ok && res.errorFa) showToast(res.errorFa, 'warn');
+                      else showToast('قرارداد اجرا شد!', 'ok');
                     }
                   )
                 }
@@ -629,7 +701,7 @@ export const App: React.FC = () => {
         </div>
       </main>
 
-      {/* Target Country Tactical Drawer */}
+      {/* Click-Any-Country Tactical Drawer */}
       {drawerTarget && (
         <TargetCountryDrawer
           room={room}
@@ -640,12 +712,9 @@ export const App: React.FC = () => {
           onQueueOrder={handleQueueOrder}
           onProposeTrade={handleProposeTrade}
           onToggleSanction={(tid) => socketRef.current?.emit('game:toggle_sanction', tid)}
-          onToggleAirspace={(tid, mode) =>
-            socketRef.current?.emit('game:toggle_airspace', { targetId: tid, mode })
-          }
           onProposeResolution={(target: CountryId, kind: UNResolution['kind']) => {
             socketRef.current?.emit('game:propose_un_resolution', { target, kind });
-            showToast('پیش‌نویس قطعنامه به شورای امنیت سازمان ملل ارسال شد!', 'ok');
+            showToast('قطعنامه به شورای امنیت ارسال شد!', 'ok');
           }}
           onOpenDirectChat={(tid) => {
             setActiveChatTarget(tid);
@@ -655,7 +724,7 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* Mobile Thumb-Friendly Bottom Navigation Bar */}
+      {/* Mobile Bottom Navigation */}
       <nav className="lg:hidden fixed bottom-0 inset-x-0 z-30 bg-[#070e1c]/95 backdrop-blur-lg border-t border-slate-800 grid grid-cols-4 py-1.5 px-2 text-[11px] font-bold">
         <button
           type="button"
@@ -677,7 +746,7 @@ export const App: React.FC = () => {
             }`}
           >
             <Building2 className="w-5 h-5" />
-            <span>کشور و ارتش</span>
+            <span>کشور و لول‌آپ</span>
           </button>
         ) : (
           <button

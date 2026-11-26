@@ -13,6 +13,11 @@ import {
   cancelPlayerOrder,
   createNewRoomState,
   executeAcceptedTrade,
+  instantBuildInfra,
+  instantProduceWeapon,
+  instantSetChokepoint,
+  instantSpotTrade,
+  instantUpgradeTrack,
   prepareEndOfPlanning,
   queuePlayerOrder,
   resolveCurrentRound,
@@ -22,13 +27,18 @@ import {
 import { RoomStore } from './store.js';
 import {
   AlertPosture,
+  ChokepointStatus,
   CountryId,
-  GameOrder,
+  CovertOpType,
   GameRoomState,
   GameSettings,
+  InfrastructureType,
+  MilitaryOpType,
+  StrikeTargetSector,
   TradeOffer,
   TradeResourceKind,
   UNResolution,
+  UpgradeTrack,
 } from '../shared/types.js';
 
 function makeRoomCode(): string {
@@ -56,7 +66,6 @@ export function createAppServer() {
     cors: { origin: '*', methods: ['GET', 'POST'] },
   });
 
-  // Track socket.id -> { roomCode, playerId }
   const socketSession = new Map<string, { roomCode: string; playerId: string }>();
 
   function broadcastRoom(room: GameRoomState): void {
@@ -72,14 +81,44 @@ export function createAppServer() {
     }
   }
 
-  function advanceFromPlanning(room: GameRoomState): void {
-    const nextStep = prepareEndOfPlanning(room);
-    if (nextStep === 'READY_TO_RESOLVE') {
+  function emitTargetedSound(room: GameRoomState, alertedCountryIds: CountryId[]): void {
+    const socketsInRoom = io.sockets.adapter.rooms.get(room.roomCode);
+    if (!socketsInRoom) return;
+    for (const sockId of socketsInRoom) {
+      const sess = socketSession.get(sockId);
+      const sock = io.sockets.sockets.get(sockId);
+      if (!sock || !sess) continue;
+      const p = room.players.find((x) => x.id === sess.playerId);
+      if (p?.countryId && alertedCountryIds.includes(p.countryId)) {
+        // ONLY the player actually under incoming missile/air attack hears the siren!
+        sock.emit('room:sound', { type: 'RADAR_SIREN' });
+      } else {
+        sock.emit('room:sound', { type: 'TACTICAL_PING' });
+      }
+    }
+  }
+
+  function finalizeRoundAfterAlert(room: GameRoomState): void {
+    if (room.settings.gmMode === 'HUMAN' && room.players.some((p) => p.isGM && p.connected)) {
+      room.phase = 'GM_REVIEW';
+      room.phaseEndsAt = null;
+      io.to(room.roomCode).emit('room:sound', { type: 'GM_CHIME' });
+      broadcastRoom(room);
+    } else {
       resolveCurrentRound(room);
       io.to(room.roomCode).emit('room:sound', { type: 'ROUND_RESOLVED', defcon: room.defcon });
-    } else if (nextStep === 'RADAR_ALERT') {
-      io.to(room.roomCode).emit('room:sound', { type: 'RADAR_SIREN' });
-    } else if (nextStep === 'GM_REVIEW') {
+      broadcastRoom(room);
+    }
+  }
+
+  function advanceFromPlanning(room: GameRoomState): void {
+    const { next, alertedCountryIds } = prepareEndOfPlanning(room);
+    if (next === 'READY_TO_RESOLVE') {
+      resolveCurrentRound(room);
+      io.to(room.roomCode).emit('room:sound', { type: 'ROUND_RESOLVED', defcon: room.defcon });
+    } else if (next === 'RADAR_ALERT') {
+      emitTargetedSound(room, alertedCountryIds);
+    } else if (next === 'GM_REVIEW') {
       io.to(room.roomCode).emit('room:sound', { type: 'GM_CHIME' });
     }
     broadcastRoom(room);
@@ -96,7 +135,7 @@ export function createAppServer() {
   }
 
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, uptime: process.uptime() });
+    res.json({ ok: true, version: '2.0.0', uptime: process.uptime() });
   });
 
   io.on('connection', (socket: Socket) => {
@@ -196,10 +235,9 @@ export function createAppServer() {
         const player = room.players.find((p) => p.id === sess.playerId);
         if (!player) return;
 
-        // Allow selecting an available country even mid-game (hot-join!) if AI-controlled
         if (payload.asGM) {
           if (room.settings.gmMode !== 'HUMAN') {
-            cb?.({ ok: false, errorFa: 'این لابی در حالت راوی خودکار است؛ ابتدا حالت راوی انسانی را فعال کنید.' });
+            cb?.({ ok: false, errorFa: 'ابتدا حالت راوی انسانی را فعال کنید.' });
             return;
           }
           const otherGM = room.players.find((p) => p.isGM && p.id !== player.id);
@@ -226,7 +264,6 @@ export function createAppServer() {
             cb?.({ ok: false, errorFa: 'این کشور قبلاً توسط بازیکن دیگری انتخاب شده است!' });
             return;
           }
-          // Release previous country if any
           if (player.countryId && room.countries[player.countryId]) {
             room.countries[player.countryId].playerId = null;
             room.countries[player.countryId].playerName = null;
@@ -273,8 +310,7 @@ export function createAppServer() {
         cb?.({ ok: false, errorFa: 'فقط میزبان لابی می‌تواند بازی را آغاز کند.' });
         return;
       }
-      const chosenCountries = room.players.filter((p) => p.countryId !== null);
-      if (chosenCountries.length === 0) {
+      if (!room.players.some((p) => p.countryId !== null)) {
         cb?.({ ok: false, errorFa: 'حداقل یک بازیکن باید یک کشور را انتخاب کند!' });
         return;
       }
@@ -289,23 +325,116 @@ export function createAppServer() {
       cb?.({ ok: true });
     });
 
-    // === GAMEPLAY EVENTS ===
+    // === INSTANT ACTIONS (Level-Ups, Infrastructures, Weapons, 1-Click Oil Spot Market!) ===
     socket.on(
-      'game:queue_order',
-      (draft: Partial<GameOrder>, cb?: (res: { ok: boolean; errorFa?: string }) => void) => {
+      'game:instant_upgrade',
+      (track: UpgradeTrack, cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void) => {
         const sess = socketSession.get(socket.id);
         if (!sess) return;
         const room = store.get(sess.roomCode);
-        if (!room) return;
-        const player = room.players.find((p) => p.id === sess.playerId);
-        if (!player?.countryId) {
-          cb?.({ ok: false, errorFa: 'شما کنترل کشوری را در دست ندارید.' });
-          return;
-        }
+        const player = room?.players.find((p) => p.id === sess.playerId);
+        if (!room || !player?.countryId) return;
+        const res = instantUpgradeTrack(room, player.countryId, track);
+        if (res.ok) broadcastRoom(room);
+        cb?.(res);
+      }
+    );
+
+    socket.on(
+      'game:instant_infra',
+      (infraType: InfrastructureType, cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void) => {
+        const sess = socketSession.get(socket.id);
+        if (!sess) return;
+        const room = store.get(sess.roomCode);
+        const player = room?.players.find((p) => p.id === sess.playerId);
+        if (!room || !player?.countryId) return;
+        const res = instantBuildInfra(room, player.countryId, infraType);
+        if (res.ok) broadcastRoom(room);
+        cb?.(res);
+      }
+    );
+
+    socket.on(
+      'game:instant_weapon',
+      (
+        payload: { weaponId: string; quantity?: number },
+        cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void
+      ) => {
+        const sess = socketSession.get(socket.id);
+        if (!sess) return;
+        const room = store.get(sess.roomCode);
+        const player = room?.players.find((p) => p.id === sess.playerId);
+        if (!room || !player?.countryId) return;
+        const res = instantProduceWeapon(room, player.countryId, payload.weaponId, payload.quantity || 1);
+        if (res.ok) broadcastRoom(room);
+        cb?.(res);
+      }
+    );
+
+    socket.on(
+      'game:spot_trade',
+      (
+        payload: { resource: 'OIL' | 'GAS' | 'FOOD' | 'URANIUM'; mode: 'BUY' | 'SELL' },
+        cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void
+      ) => {
+        const sess = socketSession.get(socket.id);
+        if (!sess) return;
+        const room = store.get(sess.roomCode);
+        const player = room?.players.find((p) => p.id === sess.playerId);
+        if (!room || !player?.countryId) return;
+        const res = instantSpotTrade(room, player.countryId, payload.resource, payload.mode);
+        if (res.ok) broadcastRoom(room);
+        cb?.(res);
+      }
+    );
+
+    socket.on('game:toggle_autosell', () => {
+      const sess = socketSession.get(socket.id);
+      if (!sess) return;
+      const room = store.get(sess.roomCode);
+      const player = room?.players.find((p) => p.id === sess.playerId);
+      if (!room || !player?.countryId) return;
+      const c = room.countries[player.countryId];
+      if (c) {
+        c.autoSellSurplus = !c.autoSellSurplus;
+        broadcastRoom(room);
+      }
+    });
+
+    socket.on(
+      'game:set_chokepoint',
+      (status: ChokepointStatus, cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void) => {
+        const sess = socketSession.get(socket.id);
+        if (!sess) return;
+        const room = store.get(sess.roomCode);
+        const player = room?.players.find((p) => p.id === sess.playerId);
+        if (!room || !player?.countryId) return;
+        const res = instantSetChokepoint(room, player.countryId, status);
+        if (res.ok) broadcastRoom(room);
+        cb?.(res);
+      }
+    );
+
+    // === STRATEGIC QUEUED OPERATIONS ===
+    socket.on(
+      'game:queue_order',
+      (
+        draft: {
+          kind: 'MILITARY_OPERATION' | 'COVERT_OPERATION';
+          targetCountry: CountryId;
+          militaryType?: MilitaryOpType;
+          targetSector?: StrikeTargetSector;
+          covertType?: CovertOpType;
+        },
+        cb?: (res: { ok: boolean; errorFa?: string }) => void
+      ) => {
+        const sess = socketSession.get(socket.id);
+        if (!sess) return;
+        const room = store.get(sess.roomCode);
+        const player = room?.players.find((p) => p.id === sess.playerId);
+        if (!room || !player?.countryId) return;
         const result = queuePlayerOrder(room, player.countryId, draft);
-        if (result.ok) {
-          broadcastRoom(room);
-        }
+        if (result.ok) broadcastRoom(room);
         cb?.({ ok: result.ok, errorFa: result.errorFa });
       }
     );
@@ -314,9 +443,8 @@ export function createAppServer() {
       const sess = socketSession.get(socket.id);
       if (!sess) return;
       const room = store.get(sess.roomCode);
-      if (!room) return;
-      const player = room.players.find((p) => p.id === sess.playerId);
-      if (!player?.countryId) return;
+      const player = room?.players.find((p) => p.id === sess.playerId);
+      if (!room || !player?.countryId) return;
       if (cancelPlayerOrder(room, player.countryId, orderId)) {
         broadcastRoom(room);
       }
@@ -334,26 +462,42 @@ export function createAppServer() {
       if (!c) return;
       c.isReady = ready;
       broadcastRoom(room);
-      if (ready) {
-        checkAllHumansReady(room);
-      }
+      if (ready) checkAllHumansReady(room);
     });
 
+    // BUG-FREE RADAR ALERT: Immediately advances round once all alerted defenders pick their defense!
     socket.on(
       'game:alert_posture',
       (posture: AlertPosture, cb?: (res: { ok: boolean; errorFa?: string }) => void) => {
         const sess = socketSession.get(socket.id);
         if (!sess) return;
         const room = store.get(sess.roomCode);
-        if (!room) return;
-        const player = room.players.find((p) => p.id === sess.playerId);
-        if (!player?.countryId) return;
+        const player = room?.players.find((p) => p.id === sess.playerId);
+        if (!room || !player?.countryId) return;
 
         const res = applyAlertPosture(room, player.countryId, posture);
-        if (res.ok) broadcastRoom(room);
-        cb?.(res);
+        if (!res.ok) {
+          cb?.({ ok: false, errorFa: res.errorFa });
+          return;
+        }
+        cb?.({ ok: true });
+        if (res.allConfirmed) {
+          finalizeRoundAfterAlert(room);
+        } else {
+          broadcastRoom(room);
+        }
       }
     );
+
+    socket.on('game:dismiss_summary', () => {
+      const sess = socketSession.get(socket.id);
+      if (!sess) return;
+      const room = store.get(sess.roomCode);
+      const player = room?.players.find((p) => p.id === sess.playerId);
+      if (!room || !player?.countryId) return;
+      room.countries[player.countryId].lastRoundSummary = null;
+      socket.emit('room:state', sanitizeRoomForPlayer(room, player.id));
+    });
 
     socket.on(
       'game:send_chat',
@@ -361,9 +505,8 @@ export function createAppServer() {
         const sess = socketSession.get(socket.id);
         if (!sess) return;
         const room = store.get(sess.roomCode);
-        if (!room) return;
-        const player = room.players.find((p) => p.id === sess.playerId);
-        if (!player) return;
+        const player = room?.players.find((p) => p.id === sess.playerId);
+        if (!room || !player) return;
         const cleanText = (payload.text || '').trim().slice(0, 350);
         if (!cleanText) return;
 
@@ -376,8 +519,8 @@ export function createAppServer() {
           channel: player.isGM && payload.toCountry ? 'GM_WHISPER' : payload.channel,
           fromCountry,
           fromName: player.isGM
-            ? '🎙️ راوی و اتاق کنترل جهان'
-            : `${room.countries[fromCountry as CountryId].flag} ${room.countries[fromCountry as CountryId].nameFa}`,
+            ? '🎙️ راوی کل جهان'
+            : room.countries[fromCountry as CountryId].nameFa,
           toCountry: payload.toCountry,
           text: cleanText,
         });
@@ -403,9 +546,8 @@ export function createAppServer() {
         const sess = socketSession.get(socket.id);
         if (!sess) return;
         const room = store.get(sess.roomCode);
-        if (!room) return;
-        const player = room.players.find((p) => p.id === sess.playerId);
-        if (!player?.countryId || player.countryId === payload.to) return;
+        const player = room?.players.find((p) => p.id === sess.playerId);
+        if (!room || !player?.countryId || player.countryId === payload.to) return;
 
         const offer: TradeOffer = {
           id: uid('trd'),
@@ -424,7 +566,6 @@ export function createAppServer() {
         const targetCountry = room.countries[payload.to];
         if (!targetCountry) return;
 
-        // If target is AI controlled -> instant intelligent evaluation & execution!
         if (targetCountry.playerId === null) {
           const decision = evaluateAITradeOffer(room, offer);
           offer.responseReasonFa = decision.reasonFa;
@@ -437,31 +578,28 @@ export function createAppServer() {
               broadcastRoom(room);
               cb?.({ ok: true, status: 'ACCEPTED', messageFa: decision.reasonFa });
               return;
-            } else {
-              offer.status = 'REJECTED';
-              offer.responseReasonFa = exec.errorFa;
-              room.trades.unshift(offer);
-              broadcastRoom(room);
-              cb?.({ ok: false, status: 'REJECTED', messageFa: exec.errorFa });
-              return;
             }
-          } else {
             offer.status = 'REJECTED';
+            offer.responseReasonFa = exec.errorFa;
             room.trades.unshift(offer);
             broadcastRoom(room);
-            cb?.({ ok: false, status: 'REJECTED', messageFa: decision.reasonFa });
+            cb?.({ ok: false, status: 'REJECTED', messageFa: exec.errorFa });
             return;
           }
+          offer.status = 'REJECTED';
+          room.trades.unshift(offer);
+          broadcastRoom(room);
+          cb?.({ ok: false, status: 'REJECTED', messageFa: decision.reasonFa });
+          return;
         }
 
-        // Human recipient -> notify live!
         room.trades.unshift(offer);
         if (room.trades.length > 40) room.trades.length = 40;
         broadcastRoom(room);
         cb?.({
           ok: true,
           status: 'PENDING',
-          messageFa: `پیشنهاد رسمی به ${targetCountry.nameFa} ارسال شد و منتظر تایید بازیکن مقابل است.`,
+          messageFa: `قرارداد برای ${targetCountry.nameFa} ارسال شد.`,
         });
       }
     );
@@ -475,16 +613,15 @@ export function createAppServer() {
         const sess = socketSession.get(socket.id);
         if (!sess) return;
         const room = store.get(sess.roomCode);
-        if (!room) return;
-        const player = room.players.find((p) => p.id === sess.playerId);
-        if (!player?.countryId) return;
+        const player = room?.players.find((p) => p.id === sess.playerId);
+        if (!room || !player?.countryId) return;
 
         const offer = room.trades.find((t) => t.id === payload.offerId && t.status === 'PENDING');
         if (!offer || offer.to !== player.countryId) return;
 
         if (!payload.accept) {
           offer.status = 'REJECTED';
-          offer.responseReasonFa = `توسط دولت ${room.countries[player.countryId].nameFa} رد شد.`;
+          offer.responseReasonFa = `توسط ${room.countries[player.countryId].nameFa} رد شد.`;
           broadcastRoom(room);
           cb?.({ ok: true });
           return;
@@ -496,7 +633,7 @@ export function createAppServer() {
           return;
         }
         offer.status = 'ACCEPTED';
-        offer.responseReasonFa = `توافق دوجانبه امضا و اجرا شد.`;
+        offer.responseReasonFa = `قرارداد امضا و اجرا شد.`;
         updateRankingsAndDefcon(room);
         broadcastRoom(room);
         cb?.({ ok: true });
@@ -507,9 +644,8 @@ export function createAppServer() {
       const sess = socketSession.get(socket.id);
       if (!sess) return;
       const room = store.get(sess.roomCode);
-      if (!room) return;
-      const player = room.players.find((p) => p.id === sess.playerId);
-      if (!player?.countryId || player.countryId === targetId) return;
+      const player = room?.players.find((p) => p.id === sess.playerId);
+      if (!room || !player?.countryId || player.countryId === targetId) return;
 
       const actor = room.countries[player.countryId];
       const target = room.countries[targetId];
@@ -525,31 +661,12 @@ export function createAppServer() {
           agencyFa: 'رویترز اقتصادی',
           category: 'ECONOMY',
           breaking: false,
-          headlineFa: `${actor.flag} ${actor.nameFa} بسته جدید تحریم‌های اقتصادی علیه ${target.flag} ${target.nameFa} وضع کرد`,
-          bodyFa: 'محدودیت‌های بانکی و صادراتی علیه کشور هدف اعمال شد.',
+          headlineFa: `${actor.nameFa} تحریم‌های اقتصادی علیه ${target.nameFa} وضع کرد`,
+          bodyFa: 'فشار بانکی و تجاری علیه کشور هدف افزایش یافت.',
           involvedCountries: [actor.id, target.id],
         });
       }
       updateRankingsAndDefcon(room);
-      broadcastRoom(room);
-    });
-
-    socket.on('game:toggle_airspace', (payload: { targetId: CountryId; mode: 'OPEN' | 'CLOSED' }) => {
-      const sess = socketSession.get(socket.id);
-      if (!sess) return;
-      const room = store.get(sess.roomCode);
-      if (!room) return;
-      const player = room.players.find((p) => p.id === sess.playerId);
-      if (!player?.countryId || player.countryId === payload.targetId) return;
-
-      const actor = room.countries[player.countryId];
-      if (payload.mode === 'CLOSED') {
-        if (!actor.airspaceClosedTo.includes(payload.targetId)) actor.airspaceClosedTo.push(payload.targetId);
-        actor.airspaceOpenTo = actor.airspaceOpenTo.filter((id) => id !== payload.targetId);
-      } else {
-        if (!actor.airspaceOpenTo.includes(payload.targetId)) actor.airspaceOpenTo.push(payload.targetId);
-        actor.airspaceClosedTo = actor.airspaceClosedTo.filter((id) => id !== payload.targetId);
-      }
       broadcastRoom(room);
     });
 
@@ -559,9 +676,8 @@ export function createAppServer() {
         const sess = socketSession.get(socket.id);
         if (!sess) return;
         const room = store.get(sess.roomCode);
-        if (!room) return;
-        const player = room.players.find((p) => p.id === sess.playerId);
-        if (!player?.countryId) return;
+        const player = room?.players.find((p) => p.id === sess.playerId);
+        if (!room || !player?.countryId) return;
 
         const proposer = room.countries[player.countryId];
         const target = room.countries[payload.target];
@@ -569,10 +685,10 @@ export function createAppServer() {
 
         const titleFa =
           payload.kind === 'GLOBAL_SANCTION'
-            ? `قطعنامه تحریم اقتصادی بین‌المللی علیه ${target.nameFa} به پیشنهاد ${proposer.nameFa}`
+            ? `قطعنامه تحریم اقتصادی جهانی علیه ${target.nameFa}`
             : payload.kind === 'CEASEFIRE_DEMAND'
-            ? `قطعنامه آتش‌بس فوری و کاهش تنش با محوریت ${target.nameFa}`
-            : `قطعنامه محکومیت اقدامات نظامی و امنیتی ${target.nameFa}`;
+            ? `قطعنامه آتش‌بس فوری با محوریت ${target.nameFa}`
+            : `قطعنامه محکومیت نظامی ${target.nameFa}`;
 
         room.resolutions.unshift({
           id: uid('un'),
@@ -596,9 +712,8 @@ export function createAppServer() {
         const sess = socketSession.get(socket.id);
         if (!sess) return;
         const room = store.get(sess.roomCode);
-        if (!room) return;
-        const player = room.players.find((p) => p.id === sess.playerId);
-        if (!player?.countryId) return;
+        const player = room?.players.find((p) => p.id === sess.playerId);
+        if (!room || !player?.countryId) return;
 
         const c = room.countries[player.countryId];
         const res = room.resolutions.find((r) => r.id === payload.resolutionId && r.status === 'ACTIVE');
@@ -611,14 +726,6 @@ export function createAppServer() {
           res.votesNo.push(c.id);
           res.vetoedBy = c.id;
           res.status = 'VETOED';
-          addNews(room, {
-            agencyFa: 'شورای امنیت سازمان ملل',
-            category: 'DIPLOMACY',
-            breaking: true,
-            headlineFa: `حق وتو اعمال شد! ${c.flag} ${c.nameFa} قطعنامه شورای امنیت را وتو کرد`,
-            bodyFa: res.titleFa,
-            involvedCountries: [c.id, res.target],
-          });
         } else if (payload.vote === 'YES') {
           res.votesYes.push(c.id);
         } else {
@@ -628,28 +735,25 @@ export function createAppServer() {
       }
     );
 
-    // === HUMAN GAME MASTER (NARRATOR) GOD-MODE CONTROLS ===
+    // === HUMAN GM CONTROLS ===
     socket.on(
       'gm:broadcast_news',
       (payload: { agencyFa: string; headlineFa: string; bodyFa: string; breaking: boolean }) => {
         const sess = socketSession.get(socket.id);
         if (!sess) return;
         const room = store.get(sess.roomCode);
-        if (!room) return;
-        const player = room.players.find((p) => p.id === sess.playerId);
-        if (!player?.isGM && !player?.isHost) return;
+        const player = room?.players.find((p) => p.id === sess.playerId);
+        if (!room || (!player?.isGM && !player?.isHost)) return;
 
         addNews(room, {
-          agencyFa: (payload.agencyFa || 'گزارش ویژه راوی جهان').slice(0, 40),
+          agencyFa: (payload.agencyFa || 'گزارش ویژه راوی').slice(0, 40),
           category: 'GM',
           breaking: Boolean(payload.breaking),
           headlineFa: (payload.headlineFa || '').slice(0, 180),
           bodyFa: (payload.bodyFa || '').slice(0, 350),
           involvedCountries: [],
         });
-        if (payload.breaking) {
-          io.to(room.roomCode).emit('room:sound', { type: 'GM_CHIME' });
-        }
+        if (payload.breaking) io.to(room.roomCode).emit('room:sound', { type: 'GM_CHIME' });
         broadcastRoom(room);
       }
     );
@@ -663,9 +767,8 @@ export function createAppServer() {
         const sess = socketSession.get(socket.id);
         if (!sess) return;
         const room = store.get(sess.roomCode);
-        if (!room) return;
-        const player = room.players.find((p) => p.id === sess.playerId);
-        if (!player?.isGM && !player?.isHost) return;
+        const player = room?.players.find((p) => p.id === sess.playerId);
+        if (!room || (!player?.isGM && !player?.isHost)) return;
 
         const target = payload.targetCountry ? room.countries[payload.targetCountry] : null;
         if (payload.preset === 'GLOBAL_OIL_SHOCK') {
@@ -675,61 +778,28 @@ export function createAppServer() {
             agencyFa: 'بلومبرگ فوری',
             category: 'ECONOMY',
             breaking: true,
-            headlineFa: `جهش ناگهانی بهای جهانی نفت به $${room.market.oilPriceUsd} در پی شوک عرضه بین‌المللی!`,
-            bodyFa: 'بازارهای بورس جهان در واکنش به بحران انرژی قرمزپوش شدند.',
+            headlineFa: `جهش ناگهانی بهای جهانی نفت به $${room.market.oilPriceUsd}!`,
+            bodyFa: 'شوک عرضه جهانی بازارهای انرژی را تکان داد.',
             involvedCountries: [],
           });
         } else if (payload.preset === 'CALM_MARKETS') {
           room.market.oilPriceUsd = Math.max(65, room.market.oilPriceUsd - 20);
           room.market.globalTension = Math.max(10, room.market.globalTension - 15);
-          addNews(room, {
-            agencyFa: 'رویترز جهانی',
-            category: 'DIPLOMACY',
-            breaking: false,
-            headlineFa: 'نشست صلح ژنو موجب کاهش تنش‌های جهانی و آرامش نسبی بازار انرژی شد',
-            bodyFa: 'شاخص امیدواری اقتصادی در بورس‌های بزرگ رشد کرد.',
-            involvedCountries: [],
-          });
         } else if (target) {
           if (payload.preset === 'OIL_BOOM') {
-            target.oilReserve += 110;
-            target.treasuryB += 45;
-            addNews(room, {
-              agencyFa: 'رویترز انرژی',
-              category: 'ECONOMY',
-              breaking: true,
-              headlineFa: `کشف میدان عظیم نفت و گاز جدید در ${target.flag} ${target.nameFa}!`,
-              bodyFa: 'ذخایر استراتژیک انرژی و ارزش دارایی‌های ملی این کشور جهش یافت.',
-              involvedCountries: [target.id],
-            });
+            target.oilReserve += 120;
+            target.treasuryB += 50;
           } else if (payload.preset === 'EARTHQUAKE') {
-            target.powerGrid = Math.max(20, target.powerGrid - 22);
+            target.powerGrid = Math.max(20, target.powerGrid - 24);
             target.treasuryB = Math.max(10, target.treasuryB - 30);
-            addNews(room, {
-              agencyFa: 'بی‌بی‌سی فوری',
-              category: 'WORLD_EVENT',
-              breaking: true,
-              headlineFa: `زلزله شدید در مناطق صنعتی ${target.flag} ${target.nameFa}؛ خسارت به شبکه برق و زیرساخت‌ها`,
-              bodyFa: 'تیم‌های امدادی برای بازسازی شبکه انتقال برق وارد عمل شدند.',
-              involvedCountries: [target.id],
-            });
           } else if (payload.preset === 'MASS_PROTEST') {
             target.approval = Math.max(12, target.approval - 18);
-            addNews(room, {
-              agencyFa: 'فرانس‌پرس فوری',
-              category: 'WORLD_EVENT',
-              breaking: true,
-              headlineFa: `تظاهرات گسترده و اعتصاب کارگری در شهرهای بزرگ ${target.flag} ${target.nameFa}!`,
-              bodyFa: 'مخالفان دولت خواستار اصلاحات فوری اقتصادی شدند.',
-              involvedCountries: [target.id],
-            });
           } else if (payload.preset === 'MILITARY_AID') {
             target.treasuryB += 50;
             target.commanderBuff = Math.min(25, target.commanderBuff + 15);
-            addIntel(target, room.round, 'SUCCESS', 'بسته ویژه پشتیبانی استراتژیک دریافت شد', '+$50B بودجه و تقویت روحیه ارتش.');
+            addIntel(target, room.round, 'SUCCESS', 'کمک ویژه نظامی دریافت شد', '+$50B بودجه و تقویت ارتش.');
           }
         }
-
         updateRankingsAndDefcon(room);
         broadcastRoom(room);
       }
@@ -747,9 +817,8 @@ export function createAppServer() {
         const sess = socketSession.get(socket.id);
         if (!sess) return;
         const room = store.get(sess.roomCode);
-        if (!room) return;
-        const player = room.players.find((p) => p.id === sess.playerId);
-        if (!player?.isGM && !player?.isHost) return;
+        const player = room?.players.find((p) => p.id === sess.playerId);
+        if (!room || (!player?.isGM && !player?.isHost)) return;
         const c = room.countries[payload.countryId];
         if (!c) return;
 
@@ -767,9 +836,8 @@ export function createAppServer() {
       const sess = socketSession.get(socket.id);
       if (!sess) return;
       const room = store.get(sess.roomCode);
-      if (!room) return;
-      const player = room.players.find((p) => p.id === sess.playerId);
-      if (!player?.isGM && !player?.isHost) return;
+      const player = room?.players.find((p) => p.id === sess.playerId);
+      if (!room || (!player?.isGM && !player?.isHost)) return;
 
       if (room.phase === 'PLANNING') {
         advanceFromPlanning(room);
@@ -797,7 +865,6 @@ export function createAppServer() {
     });
   });
 
-  // 1-second phase timer ticker (handles timed PLANNING & 30s RADAR_ALERT seamlessly)
   const ticker = setInterval(() => {
     const now = Date.now();
     for (const room of store.values()) {
@@ -806,21 +873,11 @@ export function createAppServer() {
       if (room.phase === 'PLANNING') {
         advanceFromPlanning(room);
       } else if (room.phase === 'RADAR_ALERT') {
-        if (room.settings.gmMode === 'HUMAN' && room.players.some((p) => p.isGM && p.connected)) {
-          room.phase = 'GM_REVIEW';
-          room.phaseEndsAt = null;
-          io.to(room.roomCode).emit('room:sound', { type: 'GM_CHIME' });
-          broadcastRoom(room);
-        } else {
-          resolveCurrentRound(room);
-          io.to(room.roomCode).emit('room:sound', { type: 'ROUND_RESOLVED', defcon: room.defcon });
-          broadcastRoom(room);
-        }
+        finalizeRoundAfterAlert(room);
       }
     }
   }, 1000);
 
-  // Serve built Vite SPA in production
   const distPath = path.resolve(process.cwd(), 'dist');
   if (fs.existsSync(distPath)) {
     app.use(express.static(distPath));
@@ -840,7 +897,6 @@ export function createAppServer() {
   return { app, httpServer, io, store, stopTicker: () => clearInterval(ticker) };
 }
 
-// Start server when invoked directly
 const isDirectRun =
   process.argv[1] &&
   (process.argv[1].endsWith('index.ts') || process.argv[1].endsWith('index.js'));
@@ -849,6 +905,6 @@ if (isDirectRun) {
   const PORT = Number(process.env.PORT) || 3001;
   const { httpServer } = createAppServer();
   httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`🌍 WW3 Global Command Server online on http://localhost:${PORT}`);
+    console.log(`🌍 WW3 Global Command v2.0 online on http://localhost:${PORT}`);
   });
 }
