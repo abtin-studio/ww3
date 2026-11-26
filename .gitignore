@@ -4,3 +4,4 @@ dist-server
 data
 .env
 *.log
+PUSH_TO_GITHUB.bat
