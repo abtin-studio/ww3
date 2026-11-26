@@ -5,29 +5,36 @@ import fs from 'node:fs';
 import { createServer } from 'node:http';
 import path from 'node:path';
 import { Server, Socket } from 'socket.io';
-import { evaluateAITradeOffer, generateAIDiplomaticReply } from './aiNations.js';
+import { evaluateAITradeOffer, processInteractiveAIChat } from './aiNations.js';
 import {
   addIntel,
   addNews,
   applyAlertPosture,
+  applyCreatorCheat,
   cancelPlayerOrder,
   createCoalition,
   createNewRoomState,
   createResolutionSpec,
   executeAcceptedTrade,
+  executeDiplomaticAction,
   instantBuildInfra,
   instantEmergencyAction,
   instantMinorDiplomacyPact,
   instantProduceWeapon,
+  instantSellWeapon,
   instantSetChokepoint,
   instantSpotTrade,
   instantUpgradeTrack,
   joinCoalition,
+  leaveCoalition,
   prepareEndOfPlanning,
+  prepareResumedRoom,
   queuePlayerOrder,
+  resetRoomForRematch,
   resolveCurrentRound,
   sanitizeRoomForPlayer,
   updateRankingsAndDefcon,
+  verifyCreatorKey,
 } from './gameEngine.js';
 import { RoomStore } from './store.js';
 import {
@@ -35,7 +42,9 @@ import {
   ChokepointStatus,
   CountryId,
   CovertOpType,
+  CreatorCheatPayload,
   DifficultyLevel,
+  DiplomaticActionKind,
   EmergencyActionKind,
   GameMode,
   GameRoomState,
@@ -47,6 +56,7 @@ import {
   StrikeTargetSector,
   TradeOffer,
   TradeResourceKind,
+  UltimatumDemand,
   UpgradeTrack,
 } from '../shared/types.js';
 
@@ -71,15 +81,40 @@ export function createAppServer() {
   const app = express();
   app.use(cors());
   app.use(compression());
-  app.use(express.json());
+  app.use(express.json({ limit: '5mb' }));
 
   const store = new RoomStore();
   const httpServer = createServer(app);
   const io = new Server(httpServer, {
     cors: { origin: '*', methods: ['GET', 'POST'] },
+    maxHttpBufferSize: 5e6,
   });
 
   const socketSession = new Map<string, { roomCode: string; playerId: string }>();
+
+  function hasActiveSocketForPlayer(roomCode: string, playerId: string): boolean {
+    for (const sess of socketSession.values()) {
+      if (sess.roomCode === roomCode && sess.playerId === playerId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function getActiveContext(socketId: string) {
+    const sess = socketSession.get(socketId);
+    if (!sess) return null;
+    const room = store.get(sess.roomCode);
+    if (!room) return null;
+    const player = room.players.find((p) => p.id === sess.playerId);
+    if (!player) return null;
+    // Guarantee online status after F5 / reconnect!
+    player.connected = true;
+    if (player.countryId && room.countries[player.countryId]) {
+      room.countries[player.countryId].isOnline = true;
+    }
+    return { sess, room, player };
+  }
 
   function broadcastRoom(room: GameRoomState): void {
     store.scheduleSave();
@@ -124,6 +159,7 @@ export function createAppServer() {
   }
 
   function advanceFromPlanning(room: GameRoomState): void {
+    if (room.isPaused) return;
     const { next, alertedCountryIds } = prepareEndOfPlanning(room);
     if (next === 'READY_TO_RESOLVE') {
       resolveCurrentRound(room);
@@ -137,7 +173,7 @@ export function createAppServer() {
   }
 
   function checkAllHumansReady(room: GameRoomState): void {
-    if (room.phase !== 'PLANNING') return;
+    if (room.phase !== 'PLANNING' || room.isPaused) return;
     const activeOnlineHumanCountries = Object.values(room.countries).filter(
       (c) => c.playerId !== null && c.isOnline && !c.isEliminated
     );
@@ -147,7 +183,7 @@ export function createAppServer() {
   }
 
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, version: '3.0.0', uptime: process.uptime() });
+    res.json({ ok: true, version: '4.0.0', uptime: process.uptime() });
   });
 
   io.on('connection', (socket: Socket) => {
@@ -162,6 +198,13 @@ export function createAppServer() {
         },
         cb?: (res: { ok: boolean; roomCode?: string; errorFa?: string }) => void
       ) => {
+        // Leave any previous room on this socket first!
+        const prev = socketSession.get(socket.id);
+        if (prev) {
+          socket.leave(prev.roomCode);
+          socketSession.delete(socket.id);
+        }
+
         const playerName = (payload.playerName || 'فرمانده').trim().slice(0, 24) || 'فرمانده';
         const playerId = payload.playerId || uid('plr');
         let code = makeRoomCode();
@@ -204,6 +247,61 @@ export function createAppServer() {
     );
 
     socket.on(
+      'lobby:load_save',
+      (
+        payload: {
+          playerId: string;
+          playerName: string;
+          saveCode?: string;
+          rawRoomJson?: string;
+        },
+        cb?: (res: { ok: boolean; roomCode?: string; errorFa?: string }) => void
+      ) => {
+        const prev = socketSession.get(socket.id);
+        if (prev) {
+          socket.leave(prev.roomCode);
+          socketSession.delete(socket.id);
+        }
+
+        const playerName = (payload.playerName || 'فرمانده').trim().slice(0, 24) || 'فرمانده';
+        const playerId = payload.playerId || uid('plr');
+
+        let savedRoom: GameRoomState | null = null;
+        if (payload.rawRoomJson) {
+          try {
+            const parsed = JSON.parse(payload.rawRoomJson) as GameRoomState;
+            if (parsed && parsed.schemaVersion === 4 && parsed.countries?.IR) {
+              savedRoom = parsed;
+            }
+          } catch {
+            cb?.({ ok: false, errorFa: 'فایل ذخیره بازی معتبر یا سالم نیست!' });
+            return;
+          }
+        } else if (payload.saveCode) {
+          savedRoom = store.loadPermanentSnapshot(payload.saveCode);
+        }
+
+        if (!savedRoom) {
+          cb?.({
+            ok: false,
+            errorFa: 'کد یا فایل ذخیره بازی (نسخه ۴.۰) یافت نشد! لطفاً کد SV-... یا فایل .ww3save.json را بررسی کنید.',
+          });
+          return;
+        }
+
+        let code = makeRoomCode();
+        while (store.get(code)) code = makeRoomCode();
+
+        const resumed = prepareResumedRoom(savedRoom, playerId, playerName, code);
+        store.set(code, resumed);
+        socket.join(code);
+        socketSession.set(socket.id, { roomCode: code, playerId });
+        socket.emit('room:state', sanitizeRoomForPlayer(resumed, playerId));
+        cb?.({ ok: true, roomCode: code });
+      }
+    );
+
+    socket.on(
       'lobby:join',
       (
         payload: { roomCode: string; playerId: string; playerName: string },
@@ -214,6 +312,12 @@ export function createAppServer() {
         if (!room) {
           cb?.({ ok: false, errorFa: 'کد لابی پیدا نشد! لطفاً کد ۵ حرفی را بررسی کنید.' });
           return;
+        }
+
+        const prev = socketSession.get(socket.id);
+        if (prev && prev.roomCode !== code) {
+          socket.leave(prev.roomCode);
+          socketSession.delete(socket.id);
         }
 
         const playerName = (payload.playerName || 'فرمانده').trim().slice(0, 24) || 'فرمانده';
@@ -230,6 +334,7 @@ export function createAppServer() {
             name: playerName,
             isHost: false,
             isGM: false,
+            isReadyInLobby: false,
             countryId: null,
             connected: true,
           };
@@ -250,18 +355,55 @@ export function createAppServer() {
       }
     );
 
+    socket.on('lobby:leave', (cb?: (res: { ok: boolean }) => void) => {
+      const sess = socketSession.get(socket.id);
+      if (sess) {
+        socket.leave(sess.roomCode);
+        socketSession.delete(socket.id);
+        const room = store.get(sess.roomCode);
+        if (room && !hasActiveSocketForPlayer(sess.roomCode, sess.playerId)) {
+          const pIdx = room.players.findIndex((p) => p.id === sess.playerId);
+          if (pIdx !== -1) {
+            const p = room.players[pIdx];
+            if (room.phase === 'LOBBY') {
+              if (p.countryId && room.countries[p.countryId]) {
+                room.countries[p.countryId].playerId = null;
+                room.countries[p.countryId].playerName = null;
+                room.countries[p.countryId].isOnline = false;
+              }
+              room.players.splice(pIdx, 1);
+              if (room.players.length > 0 && !room.players.some((x) => x.isHost)) {
+                room.players[0].isHost = true;
+              }
+            } else {
+              p.connected = false;
+              if (p.countryId && room.countries[p.countryId]) {
+                room.countries[p.countryId].isOnline = false;
+              }
+            }
+            broadcastRoom(room);
+          }
+        }
+      }
+      cb?.({ ok: true });
+    });
+
+    socket.on('lobby:toggle_ready', () => {
+      const ctx = getActiveContext(socket.id);
+      if (!ctx || ctx.room.phase !== 'LOBBY') return;
+      ctx.player.isReadyInLobby = !ctx.player.isReadyInLobby;
+      broadcastRoom(ctx.room);
+    });
+
     socket.on(
       'lobby:select_role',
       (
         payload: { countryId: CountryId | null; asGM?: boolean },
         cb?: (res: { ok: boolean; errorFa?: string }) => void
       ) => {
-        const sess = socketSession.get(socket.id);
-        if (!sess) return;
-        const room = store.get(sess.roomCode);
-        if (!room) return;
-        const player = room.players.find((p) => p.id === sess.playerId);
-        if (!player) return;
+        const ctx = getActiveContext(socket.id);
+        if (!ctx) return;
+        const { room, player } = ctx;
 
         if (payload.asGM) {
           if (room.settings.gmMode !== 'HUMAN') {
@@ -280,6 +422,7 @@ export function createAppServer() {
           }
           player.countryId = null;
           player.isGM = true;
+          player.isReadyInLobby = true;
           broadcastRoom(room);
           cb?.({ ok: true });
           return;
@@ -287,7 +430,10 @@ export function createAppServer() {
 
         if (payload.countryId) {
           const targetCountry = room.countries[payload.countryId];
-          if (!targetCountry) return;
+          if (!targetCountry || targetCountry.isEliminated) {
+            cb?.({ ok: false, errorFa: 'این کشور سقوط کرده و قابل انتخاب نیست.' });
+            return;
+          }
           if (targetCountry.playerId && targetCountry.playerId !== player.id) {
             cb?.({ ok: false, errorFa: 'این کشور قبلاً توسط بازیکن دیگری انتخاب شده است!' });
             return;
@@ -299,6 +445,7 @@ export function createAppServer() {
           }
           player.isGM = false;
           player.countryId = payload.countryId;
+          player.isReadyInLobby = true;
           targetCountry.playerId = player.id;
           targetCountry.playerName = player.name;
           targetCountry.isOnline = true;
@@ -309,12 +456,9 @@ export function createAppServer() {
     );
 
     socket.on('lobby:update_settings', (partial: Partial<GameSettings>) => {
-      const sess = socketSession.get(socket.id);
-      if (!sess) return;
-      const room = store.get(sess.roomCode);
-      if (!room || room.phase !== 'LOBBY') return;
-      const player = room.players.find((p) => p.id === sess.playerId);
-      if (!player?.isHost) return;
+      const ctx = getActiveContext(socket.id);
+      if (!ctx || ctx.room.phase !== 'LOBBY' || !ctx.player.isHost) return;
+      const { room } = ctx;
 
       if (partial.gameMode) room.settings.gameMode = partial.gameMode;
       if (partial.difficulty) room.settings.difficulty = partial.difficulty;
@@ -336,12 +480,10 @@ export function createAppServer() {
     });
 
     socket.on('lobby:start', (cb?: (res: { ok: boolean; errorFa?: string }) => void) => {
-      const sess = socketSession.get(socket.id);
-      if (!sess) return;
-      const room = store.get(sess.roomCode);
-      if (!room || room.phase !== 'LOBBY') return;
-      const player = room.players.find((p) => p.id === sess.playerId);
-      if (!player?.isHost) {
+      const ctx = getActiveContext(socket.id);
+      if (!ctx || ctx.room.phase !== 'LOBBY') return;
+      const { room, player } = ctx;
+      if (!player.isHost) {
         cb?.({ ok: false, errorFa: 'فقط میزبان لابی می‌تواند بازی را آغاز کند.' });
         return;
       }
@@ -351,6 +493,8 @@ export function createAppServer() {
       }
 
       room.phase = 'PLANNING';
+      room.isPaused = false;
+      room.pausedRemainingMs = null;
       room.phaseEndsAt =
         room.settings.planningTimerSec > 0
           ? Date.now() + room.settings.planningTimerSec * 1000
@@ -360,17 +504,87 @@ export function createAppServer() {
       cb?.({ ok: true });
     });
 
+    // === PAUSE, SAVE SNAPSHOT & REMATCH (ITEMS #1 & #5) ===
+    socket.on(
+      'game:toggle_pause',
+      (cb?: (res: { ok: boolean; isPaused?: boolean; errorFa?: string }) => void) => {
+        const ctx = getActiveContext(socket.id);
+        if (!ctx) return;
+        const { room, player } = ctx;
+        if (!player.isHost && !player.isGM) {
+          cb?.({ ok: false, errorFa: 'فقط میزبان بازی می‌تواند بازی را متوقف یا ادامه دهد.' });
+          return;
+        }
+        if (room.phase === 'LOBBY' || room.phase === 'FINISHED') {
+          cb?.({ ok: false, errorFa: 'توقف موقت فقط در جریان بازی فعال است.' });
+          return;
+        }
+
+        if (!room.isPaused) {
+          room.isPaused = true;
+          if (room.phaseEndsAt) {
+            room.pausedRemainingMs = Math.max(1000, room.phaseEndsAt - Date.now());
+            room.phaseEndsAt = null;
+          }
+        } else {
+          room.isPaused = false;
+          if (room.pausedRemainingMs) {
+            room.phaseEndsAt = Date.now() + room.pausedRemainingMs;
+            room.pausedRemainingMs = null;
+          }
+        }
+        broadcastRoom(room);
+        cb?.({ ok: true, isPaused: room.isPaused });
+      }
+    );
+
+    socket.on(
+      'game:save_snapshot',
+      (
+        cb?: (res: {
+          ok: boolean;
+          saveCode?: string;
+          roomJson?: string;
+          fileName?: string;
+          errorFa?: string;
+        }) => void
+      ) => {
+        const ctx = getActiveContext(socket.id);
+        if (!ctx) return;
+        const { room } = ctx;
+        const saveCode = store.savePermanentSnapshot(room);
+        room.lastSavedCode = saveCode;
+        broadcastRoom(room);
+        cb?.({
+          ok: true,
+          saveCode,
+          roomJson: JSON.stringify(room),
+          fileName: `ww3-${room.roomCode}-month${room.round}.ww3save.json`,
+        });
+      }
+    );
+
+    socket.on('game:rematch_lobby', (cb?: (res: { ok: boolean; errorFa?: string }) => void) => {
+      const ctx = getActiveContext(socket.id);
+      if (!ctx) return;
+      const { room, player } = ctx;
+      if (!player.isHost) {
+        cb?.({ ok: false, errorFa: 'فقط میزبان می‌تواند بازی جدید در همین لابی آغاز کند.' });
+        return;
+      }
+      resetRoomForRematch(room);
+      broadcastRoom(room);
+      cb?.({ ok: true });
+    });
+
     // === INSTANT ACTIONS ===
     socket.on(
       'game:instant_upgrade',
       (track: UpgradeTrack, cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void) => {
-        const sess = socketSession.get(socket.id);
-        if (!sess) return;
-        const room = store.get(sess.roomCode);
-        const player = room?.players.find((p) => p.id === sess.playerId);
-        if (!room || !player?.countryId) return;
-        const res = instantUpgradeTrack(room, player.countryId, track);
-        if (res.ok) broadcastRoom(room);
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const res = instantUpgradeTrack(ctx.room, ctx.player.countryId, track);
+        if (res.ok) broadcastRoom(ctx.room);
         cb?.(res);
       }
     );
@@ -378,13 +592,10 @@ export function createAppServer() {
     socket.on(
       'game:instant_infra',
       (infraType: InfrastructureType, cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void) => {
-        const sess = socketSession.get(socket.id);
-        if (!sess) return;
-        const room = store.get(sess.roomCode);
-        const player = room?.players.find((p) => p.id === sess.playerId);
-        if (!room || !player?.countryId) return;
-        const res = instantBuildInfra(room, player.countryId, infraType);
-        if (res.ok) broadcastRoom(room);
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const res = instantBuildInfra(ctx.room, ctx.player.countryId, infraType);
+        if (res.ok) broadcastRoom(ctx.room);
         cb?.(res);
       }
     );
@@ -392,13 +603,10 @@ export function createAppServer() {
     socket.on(
       'game:emergency_action',
       (kind: EmergencyActionKind, cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void) => {
-        const sess = socketSession.get(socket.id);
-        if (!sess) return;
-        const room = store.get(sess.roomCode);
-        const player = room?.players.find((p) => p.id === sess.playerId);
-        if (!room || !player?.countryId) return;
-        const res = instantEmergencyAction(room, player.countryId, kind);
-        if (res.ok) broadcastRoom(room);
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const res = instantEmergencyAction(ctx.room, ctx.player.countryId, kind);
+        if (res.ok) broadcastRoom(ctx.room);
         cb?.(res);
       }
     );
@@ -409,13 +617,24 @@ export function createAppServer() {
         payload: { weaponId: string; quantity?: number },
         cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void
       ) => {
-        const sess = socketSession.get(socket.id);
-        if (!sess) return;
-        const room = store.get(sess.roomCode);
-        const player = room?.players.find((p) => p.id === sess.playerId);
-        if (!room || !player?.countryId) return;
-        const res = instantProduceWeapon(room, player.countryId, payload.weaponId, payload.quantity || 1);
-        if (res.ok) broadcastRoom(room);
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const res = instantProduceWeapon(ctx.room, ctx.player.countryId, payload.weaponId, payload.quantity || 1);
+        if (res.ok) broadcastRoom(ctx.room);
+        cb?.(res);
+      }
+    );
+
+    socket.on(
+      'game:sell_weapon',
+      (
+        payload: { weaponId: string; quantity?: number },
+        cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void
+      ) => {
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const res = instantSellWeapon(ctx.room, ctx.player.countryId, payload.weaponId, payload.quantity || 1);
+        if (res.ok) broadcastRoom(ctx.room);
         cb?.(res);
       }
     );
@@ -423,43 +642,34 @@ export function createAppServer() {
     socket.on(
       'game:spot_trade',
       (
-        payload: { resource: 'OIL' | 'GAS' | 'FOOD' | 'URANIUM'; mode: 'BUY' | 'SELL' },
+        payload: { resource: 'OIL' | 'GAS' | 'FOOD' | 'WATER' | 'URANIUM'; mode: 'BUY' | 'SELL' },
         cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void
       ) => {
-        const sess = socketSession.get(socket.id);
-        if (!sess) return;
-        const room = store.get(sess.roomCode);
-        const player = room?.players.find((p) => p.id === sess.playerId);
-        if (!room || !player?.countryId) return;
-        const res = instantSpotTrade(room, player.countryId, payload.resource, payload.mode);
-        if (res.ok) broadcastRoom(room);
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const res = instantSpotTrade(ctx.room, ctx.player.countryId, payload.resource, payload.mode);
+        if (res.ok) broadcastRoom(ctx.room);
         cb?.(res);
       }
     );
 
     socket.on('game:toggle_autosell', () => {
-      const sess = socketSession.get(socket.id);
-      if (!sess) return;
-      const room = store.get(sess.roomCode);
-      const player = room?.players.find((p) => p.id === sess.playerId);
-      if (!room || !player?.countryId) return;
-      const c = room.countries[player.countryId];
+      const ctx = getActiveContext(socket.id);
+      if (!ctx?.player.countryId) return;
+      const c = ctx.room.countries[ctx.player.countryId];
       if (c && !c.isEliminated) {
         c.autoSellSurplus = !c.autoSellSurplus;
-        broadcastRoom(room);
+        broadcastRoom(ctx.room);
       }
     });
 
     socket.on(
       'game:set_chokepoint',
       (status: ChokepointStatus, cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void) => {
-        const sess = socketSession.get(socket.id);
-        if (!sess) return;
-        const room = store.get(sess.roomCode);
-        const player = room?.players.find((p) => p.id === sess.playerId);
-        if (!room || !player?.countryId) return;
-        const res = instantSetChokepoint(room, player.countryId, status);
-        if (res.ok) broadcastRoom(room);
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const res = instantSetChokepoint(ctx.room, ctx.player.countryId, status);
+        if (res.ok) broadcastRoom(ctx.room);
         cb?.(res);
       }
     );
@@ -467,13 +677,33 @@ export function createAppServer() {
     socket.on(
       'game:minor_pact',
       (minorId: string, cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void) => {
-        const sess = socketSession.get(socket.id);
-        if (!sess) return;
-        const room = store.get(sess.roomCode);
-        const player = room?.players.find((p) => p.id === sess.playerId);
-        if (!room || !player?.countryId) return;
-        const res = instantMinorDiplomacyPact(room, player.countryId, minorId);
-        if (res.ok) broadcastRoom(room);
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const res = instantMinorDiplomacyPact(ctx.room, ctx.player.countryId, minorId);
+        if (res.ok) broadcastRoom(ctx.room);
+        cb?.(res);
+      }
+    );
+
+    // === DIPLOMATIC STATECRAFT (THREATEN, BEFRIEND, SOW DISCORD — ITEM #17) ===
+    socket.on(
+      'game:diplomatic_action',
+      (
+        payload: {
+          targetCountry: CountryId;
+          kind: DiplomaticActionKind;
+          ultimatum?: UltimatumDemand;
+          thirdCountry?: CountryId;
+        },
+        cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void
+      ) => {
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const res = executeDiplomaticAction(ctx.room, ctx.player.countryId, payload.targetCountry, payload.kind, {
+          ultimatum: payload.ultimatum,
+          thirdCountry: payload.thirdCountry,
+        });
+        broadcastRoom(ctx.room);
         cb?.(res);
       }
     );
@@ -482,13 +712,10 @@ export function createAppServer() {
     socket.on(
       'game:create_coalition',
       (nameFa: string, cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void) => {
-        const sess = socketSession.get(socket.id);
-        if (!sess) return;
-        const room = store.get(sess.roomCode);
-        const player = room?.players.find((p) => p.id === sess.playerId);
-        if (!room || !player?.countryId) return;
-        const res = createCoalition(room, player.countryId, nameFa);
-        if (res.ok) broadcastRoom(room);
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const res = createCoalition(ctx.room, ctx.player.countryId, nameFa);
+        if (res.ok) broadcastRoom(ctx.room);
         cb?.(res);
       }
     );
@@ -496,13 +723,21 @@ export function createAppServer() {
     socket.on(
       'game:join_coalition',
       (coalitionId: string, cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void) => {
-        const sess = socketSession.get(socket.id);
-        if (!sess) return;
-        const room = store.get(sess.roomCode);
-        const player = room?.players.find((p) => p.id === sess.playerId);
-        if (!room || !player?.countryId) return;
-        const res = joinCoalition(room, player.countryId, coalitionId);
-        if (res.ok) broadcastRoom(room);
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const res = joinCoalition(ctx.room, ctx.player.countryId, coalitionId);
+        if (res.ok) broadcastRoom(ctx.room);
+        cb?.(res);
+      }
+    );
+
+    socket.on(
+      'game:leave_coalition',
+      (cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void) => {
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const res = leaveCoalition(ctx.room, ctx.player.countryId);
+        if (res.ok) broadcastRoom(ctx.room);
         cb?.(res);
       }
     );
@@ -522,77 +757,61 @@ export function createAppServer() {
         },
         cb?: (res: { ok: boolean; errorFa?: string }) => void
       ) => {
-        const sess = socketSession.get(socket.id);
-        if (!sess) return;
-        const room = store.get(sess.roomCode);
-        const player = room?.players.find((p) => p.id === sess.playerId);
-        if (!room || !player?.countryId) return;
-        const result = queuePlayerOrder(room, player.countryId, draft);
-        if (result.ok) broadcastRoom(room);
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const result = queuePlayerOrder(ctx.room, ctx.player.countryId, draft);
+        if (result.ok) broadcastRoom(ctx.room);
         cb?.({ ok: result.ok, errorFa: result.errorFa });
       }
     );
 
     socket.on('game:cancel_order', (orderId: string) => {
-      const sess = socketSession.get(socket.id);
-      if (!sess) return;
-      const room = store.get(sess.roomCode);
-      const player = room?.players.find((p) => p.id === sess.playerId);
-      if (!room || !player?.countryId) return;
-      if (cancelPlayerOrder(room, player.countryId, orderId)) {
-        broadcastRoom(room);
+      const ctx = getActiveContext(socket.id);
+      if (!ctx?.player.countryId) return;
+      if (cancelPlayerOrder(ctx.room, ctx.player.countryId, orderId)) {
+        broadcastRoom(ctx.room);
       }
     });
 
     socket.on('game:toggle_ready', (ready: boolean) => {
-      const sess = socketSession.get(socket.id);
-      if (!sess) return;
-      const room = store.get(sess.roomCode);
-      if (!room || room.phase !== 'PLANNING') return;
-      const player = room.players.find((p) => p.id === sess.playerId);
-      if (!player?.countryId) return;
+      const ctx = getActiveContext(socket.id);
+      if (!ctx || ctx.room.phase !== 'PLANNING' || ctx.room.isPaused || !ctx.player.countryId) return;
 
-      const c = room.countries[player.countryId];
+      const c = ctx.room.countries[ctx.player.countryId];
       if (!c || c.isEliminated) return;
       c.isReady = ready;
-      broadcastRoom(room);
-      if (ready) checkAllHumansReady(room);
+      broadcastRoom(ctx.room);
+      if (ready) checkAllHumansReady(ctx.room);
     });
 
     socket.on(
       'game:alert_posture',
       (posture: AlertPosture, cb?: (res: { ok: boolean; errorFa?: string }) => void) => {
-        const sess = socketSession.get(socket.id);
-        if (!sess) return;
-        const room = store.get(sess.roomCode);
-        const player = room?.players.find((p) => p.id === sess.playerId);
-        if (!room || !player?.countryId) return;
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
 
-        const res = applyAlertPosture(room, player.countryId, posture);
+        const res = applyAlertPosture(ctx.room, ctx.player.countryId, posture);
         if (!res.ok) {
           cb?.({ ok: false, errorFa: res.errorFa });
           return;
         }
         cb?.({ ok: true });
         if (res.allConfirmed) {
-          finalizeRoundAfterAlert(room);
+          finalizeRoundAfterAlert(ctx.room);
         } else {
-          broadcastRoom(room);
+          broadcastRoom(ctx.room);
         }
       }
     );
 
     socket.on('game:dismiss_summary', () => {
-      const sess = socketSession.get(socket.id);
-      if (!sess) return;
-      const room = store.get(sess.roomCode);
-      const player = room?.players.find((p) => p.id === sess.playerId);
-      if (!room || !player?.countryId) return;
-      room.countries[player.countryId].lastRoundSummary = null;
-      socket.emit('room:state', sanitizeRoomForPlayer(room, player.id));
+      const ctx = getActiveContext(socket.id);
+      if (!ctx?.player.countryId) return;
+      ctx.room.countries[ctx.player.countryId].lastRoundSummary = null;
+      socket.emit('room:state', sanitizeRoomForPlayer(ctx.room, ctx.player.id));
     });
 
-    // === DIPLOMATIC CHAT (WITH LIVE AI FOREIGN MINISTRY REPLIES!) ===
+    // === INTERACTIVE DIPLOMATIC CHAT WITH LIVE AI NEGOTIATION ===
     socket.on(
       'game:send_chat',
       (payload: {
@@ -600,11 +819,9 @@ export function createAppServer() {
         toCountry?: CountryId;
         text: string;
       }) => {
-        const sess = socketSession.get(socket.id);
-        if (!sess) return;
-        const room = store.get(sess.roomCode);
-        const player = room?.players.find((p) => p.id === sess.playerId);
-        if (!room || !player) return;
+        const ctx = getActiveContext(socket.id);
+        if (!ctx) return;
+        const { room, player } = ctx;
         const cleanText = (payload.text || '').trim().slice(0, 380);
         if (!cleanText) return;
 
@@ -612,6 +829,8 @@ export function createAppServer() {
         if (!fromCountry) return;
 
         const senderCountryObj = fromCountry !== 'GM' ? room.countries[fromCountry] : null;
+        if (payload.channel === 'COALITION' && !senderCountryObj?.coalitionId) return;
+
         const effectiveChannel =
           player.isGM && payload.toCountry ? 'GM_WHISPER' : payload.channel;
 
@@ -627,10 +846,9 @@ export function createAppServer() {
           toCountry: payload.toCountry,
           text: cleanText,
         });
-        if (room.messages.length > 140) room.messages.shift();
+        if (room.messages.length > 150) room.messages.shift();
         broadcastRoom(room);
 
-        // If a human sends a DIRECT cable to an AI-controlled country, AI diplomat replies smartly!
         if (
           effectiveChannel === 'DIRECT' &&
           payload.toCountry &&
@@ -639,23 +857,28 @@ export function createAppServer() {
           room.countries[payload.toCountry].playerId === null &&
           !room.countries[payload.toCountry].isEliminated
         ) {
-          const targetAI = room.countries[payload.toCountry];
+          const targetId = payload.toCountry;
+          const senderId = senderCountryObj.id;
           setTimeout(() => {
             const latestRoom = store.get(room.roomCode);
-            if (!latestRoom || targetAI.isEliminated) return;
-            const replyText = generateAIDiplomaticReply(latestRoom, targetAI, senderCountryObj, cleanText);
+            if (!latestRoom) return;
+            const targetAI = latestRoom.countries[targetId];
+            const latestSender = latestRoom.countries[senderId];
+            if (!targetAI || !latestSender || targetAI.isEliminated || targetAI.playerId !== null) return;
+
+            const replyText = processInteractiveAIChat(latestRoom, targetAI, latestSender, cleanText);
             latestRoom.messages.push({
               id: uid('ai-reply'),
               timestamp: Date.now(),
               channel: 'DIRECT',
               fromCountry: targetAI.id,
               fromName: `${targetAI.nameFa} (وزارت خارجه)`,
-              toCountry: senderCountryObj.id,
+              toCountry: latestSender.id,
               text: replyText,
             });
-            if (latestRoom.messages.length > 140) latestRoom.messages.shift();
+            if (latestRoom.messages.length > 150) latestRoom.messages.shift();
             broadcastRoom(latestRoom);
-          }, 650);
+          }, 550);
         }
       }
     );
@@ -674,16 +897,14 @@ export function createAppServer() {
         },
         cb?: (res: { ok: boolean; status?: string; messageFa?: string }) => void
       ) => {
-        const sess = socketSession.get(socket.id);
-        if (!sess) return;
-        const room = store.get(sess.roomCode);
-        const player = room?.players.find((p) => p.id === sess.playerId);
-        if (!room || !player?.countryId || player.countryId === payload.to) return;
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId || ctx.player.countryId === payload.to) return;
+        const { room, player } = ctx;
 
         const offer: TradeOffer = {
           id: uid('trd'),
           round: room.round,
-          from: player.countryId,
+          from: player.countryId!,
           to: payload.to,
           offerType: payload.offerType,
           amount: Math.max(1, Math.round(payload.amount || 1)),
@@ -741,11 +962,9 @@ export function createAppServer() {
         payload: { offerId: string; accept: boolean },
         cb?: (res: { ok: boolean; errorFa?: string }) => void
       ) => {
-        const sess = socketSession.get(socket.id);
-        if (!sess) return;
-        const room = store.get(sess.roomCode);
-        const player = room?.players.find((p) => p.id === sess.playerId);
-        if (!room || !player?.countryId) return;
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const { room, player } = ctx;
 
         const offer = room.trades.find((t) => t.id === payload.offerId && t.status === 'PENDING');
         if (!offer || offer.to !== player.countryId) return;
@@ -764,7 +983,7 @@ export function createAppServer() {
           return;
         }
         offer.status = 'ACCEPTED';
-        offer.responseReasonFa = `قرارداد امضا و اجرا شد.`;
+        offer.responseReasonFa = 'قرارداد امضا و اجرا شد.';
         updateRankingsAndDefcon(room);
         broadcastRoom(room);
         cb?.({ ok: true });
@@ -772,13 +991,11 @@ export function createAppServer() {
     );
 
     socket.on('game:toggle_sanction', (targetId: CountryId) => {
-      const sess = socketSession.get(socket.id);
-      if (!sess) return;
-      const room = store.get(sess.roomCode);
-      const player = room?.players.find((p) => p.id === sess.playerId);
-      if (!room || !player?.countryId || player.countryId === targetId) return;
+      const ctx = getActiveContext(socket.id);
+      if (!ctx?.player.countryId || ctx.player.countryId === targetId) return;
+      const { room, player } = ctx;
 
-      const actor = room.countries[player.countryId];
+      const actor = room.countries[player.countryId!];
       const target = room.countries[targetId];
       if (!actor || !target || actor.isEliminated || target.isEliminated) return;
 
@@ -808,13 +1025,11 @@ export function createAppServer() {
         payload: { target: CountryId; kind: ResolutionKind },
         cb?: (res: { ok: boolean; errorFa?: string }) => void
       ) => {
-        const sess = socketSession.get(socket.id);
-        if (!sess) return;
-        const room = store.get(sess.roomCode);
-        const player = room?.players.find((p) => p.id === sess.playerId);
-        if (!room || !player?.countryId) return;
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const { room, player } = ctx;
 
-        const proposer = room.countries[player.countryId];
+        const proposer = room.countries[player.countryId!];
         const target = room.countries[payload.target];
         if (!proposer || !target || proposer.isEliminated) return;
 
@@ -846,13 +1061,11 @@ export function createAppServer() {
     socket.on(
       'game:vote_un_resolution',
       (payload: { resolutionId: string; vote: 'YES' | 'NO' | 'VETO' }) => {
-        const sess = socketSession.get(socket.id);
-        if (!sess) return;
-        const room = store.get(sess.roomCode);
-        const player = room?.players.find((p) => p.id === sess.playerId);
-        if (!room || !player?.countryId) return;
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const { room, player } = ctx;
 
-        const c = room.countries[player.countryId];
+        const c = room.countries[player.countryId!];
         const res = room.resolutions.find((r) => r.id === payload.resolutionId && r.status === 'ACTIVE');
         if (!c || c.isEliminated || !res) return;
 
@@ -876,15 +1089,48 @@ export function createAppServer() {
       }
     );
 
+    // === SECRET CREATOR CHEAT CONSOLE SOCKET HANDLERS (ITEM #21!) ===
+    socket.on(
+      'creator:inspect',
+      (
+        secretKey: string,
+        cb?: (res: { ok: boolean; fullRoom?: GameRoomState; errorFa?: string }) => void
+      ) => {
+        const ctx = getActiveContext(socket.id);
+        if (!ctx) return;
+        if (!verifyCreatorKey(secretKey)) {
+          cb?.({ ok: false, errorFa: 'کد دسترسی سازنده نامعتبر است.' });
+          return;
+        }
+        cb?.({ ok: true, fullRoom: ctx.room });
+      }
+    );
+
+    socket.on(
+      'creator:exec',
+      (
+        payload: CreatorCheatPayload,
+        cb?: (res: { ok: boolean; messageFa?: string; fullRoom?: GameRoomState; errorFa?: string }) => void
+      ) => {
+        const ctx = getActiveContext(socket.id);
+        if (!ctx) return;
+        const res = applyCreatorCheat(ctx.room, payload);
+        if (res.ok) {
+          broadcastRoom(ctx.room);
+          cb?.({ ok: true, messageFa: res.messageFa, fullRoom: ctx.room });
+        } else {
+          cb?.({ ok: false, errorFa: res.errorFa });
+        }
+      }
+    );
+
     // === HUMAN GM CONTROLS ===
     socket.on(
       'gm:broadcast_news',
       (payload: { agencyFa: string; headlineFa: string; bodyFa: string; breaking: boolean }) => {
-        const sess = socketSession.get(socket.id);
-        if (!sess) return;
-        const room = store.get(sess.roomCode);
-        const player = room?.players.find((p) => p.id === sess.playerId);
-        if (!room || (!player?.isGM && !player?.isHost)) return;
+        const ctx = getActiveContext(socket.id);
+        if (!ctx || (!ctx.player.isGM && !ctx.player.isHost)) return;
+        const { room } = ctx;
 
         addNews(room, {
           agencyFa: (payload.agencyFa || 'گزارش ویژه راوی').slice(0, 40),
@@ -905,11 +1151,9 @@ export function createAppServer() {
         targetCountry?: CountryId;
         preset: 'OIL_BOOM' | 'EARTHQUAKE' | 'MASS_PROTEST' | 'MILITARY_AID' | 'GLOBAL_OIL_SHOCK' | 'CALM_MARKETS';
       }) => {
-        const sess = socketSession.get(socket.id);
-        if (!sess) return;
-        const room = store.get(sess.roomCode);
-        const player = room?.players.find((p) => p.id === sess.playerId);
-        if (!room || (!player?.isGM && !player?.isHost)) return;
+        const ctx = getActiveContext(socket.id);
+        if (!ctx || (!ctx.player.isGM && !ctx.player.isHost)) return;
+        const { room } = ctx;
 
         const target = payload.targetCountry ? room.countries[payload.targetCountry] : null;
         if (payload.preset === 'GLOBAL_OIL_SHOCK') {
@@ -955,12 +1199,9 @@ export function createAppServer() {
         oilDelta?: number;
         warheadsDelta?: number;
       }) => {
-        const sess = socketSession.get(socket.id);
-        if (!sess) return;
-        const room = store.get(sess.roomCode);
-        const player = room?.players.find((p) => p.id === sess.playerId);
-        if (!room || (!player?.isGM && !player?.isHost)) return;
-        const c = room.countries[payload.countryId];
+        const ctx = getActiveContext(socket.id);
+        if (!ctx || (!ctx.player.isGM && !ctx.player.isHost)) return;
+        const c = ctx.room.countries[payload.countryId];
         if (!c) return;
 
         if (payload.treasuryDelta) c.treasuryB = Math.max(0, c.treasuryB + payload.treasuryDelta);
@@ -968,17 +1209,17 @@ export function createAppServer() {
         if (payload.oilDelta) c.oilReserve = Math.max(0, c.oilReserve + payload.oilDelta);
         if (payload.warheadsDelta) c.warheads = Math.max(0, c.warheads + payload.warheadsDelta);
 
-        updateRankingsAndDefcon(room);
-        broadcastRoom(room);
+        updateRankingsAndDefcon(ctx.room);
+        broadcastRoom(ctx.room);
       }
     );
 
     socket.on('gm:force_advance', () => {
-      const sess = socketSession.get(socket.id);
-      if (!sess) return;
-      const room = store.get(sess.roomCode);
-      const player = room?.players.find((p) => p.id === sess.playerId);
-      if (!room || (!player?.isGM && !player?.isHost)) return;
+      const ctx = getActiveContext(socket.id);
+      if (!ctx || (!ctx.player.isGM && !ctx.player.isHost)) return;
+      const { room } = ctx;
+      room.isPaused = false;
+      room.pausedRemainingMs = null;
 
       if (room.phase === 'PLANNING') {
         advanceFromPlanning(room);
@@ -989,10 +1230,18 @@ export function createAppServer() {
       }
     });
 
+    // === 100% F5-SAFE MULTI-SOCKET DISCONNECT HANDLER (ITEM #6!) ===
     socket.on('disconnect', () => {
       const sess = socketSession.get(socket.id);
       if (!sess) return;
       socketSession.delete(socket.id);
+
+      // Critical F5 Refresh Fix: If a newer socket for the same playerId is ALREADY connected,
+      // DO NOT mark this player offline!
+      if (hasActiveSocketForPlayer(sess.roomCode, sess.playerId)) {
+        return;
+      }
+
       const room = store.get(sess.roomCode);
       if (!room) return;
       const player = room.players.find((p) => p.id === sess.playerId);
@@ -1001,10 +1250,9 @@ export function createAppServer() {
         if (player.countryId && room.countries[player.countryId]) {
           room.countries[player.countryId].isOnline = false;
         }
-        // Ensure a disconnected player NEVER deadlocks Planning, Radar Alert, or GM Review!
-        if (room.phase === 'PLANNING') {
+        if (room.phase === 'PLANNING' && !room.isPaused) {
           checkAllHumansReady(room);
-        } else if (room.phase === 'RADAR_ALERT') {
+        } else if (room.phase === 'RADAR_ALERT' && !room.isPaused) {
           const remainingAlerted = Object.values(room.countries).filter(
             (x) => x.incomingAlertActive && !x.isEliminated && x.playerId !== null && x.isOnline && !x.alertPostureConfirmed
           );
@@ -1024,7 +1272,7 @@ export function createAppServer() {
   const ticker = setInterval(() => {
     const now = Date.now();
     for (const room of store.values()) {
-      if (!room.phaseEndsAt || now < room.phaseEndsAt) continue;
+      if (room.isPaused || !room.phaseEndsAt || now < room.phaseEndsAt) continue;
 
       if (room.phase === 'PLANNING') {
         advanceFromPlanning(room);
@@ -1061,6 +1309,6 @@ if (isDirectRun) {
   const PORT = Number(process.env.PORT) || 3001;
   const { httpServer } = createAppServer();
   httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`🌍 WW3 Global Command v3.0 online on http://localhost:${PORT}`);
+    console.log(`🌍 WW3 Global Command v4.0 online on http://localhost:${PORT}`);
   });
 }

@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { ShieldAlert, Plane, Rocket, Shield } from 'lucide-react';
 import { AlertPosture, CountryState } from '../../shared/types';
+import { sound } from '../utils/sound';
 
 interface RadarAlertModalProps {
   me: CountryState;
@@ -13,11 +14,26 @@ export const RadarAlertModal: React.FC<RadarAlertModalProps> = ({
   secondsLeft,
   onSelectPosture,
 }) => {
+  const [liveSec, setLiveSec] = useState(secondsLeft);
+
+  useEffect(() => {
+    setLiveSec(secondsLeft);
+    const timer = setInterval(() => {
+      setLiveSec((prev) => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [secondsLeft]);
+
   if (!me.incomingAlertActive || me.alertPostureConfirmed) return null;
+
+  const choose = (p: AlertPosture) => {
+    sound.playOrderConfirm();
+    onSelectPosture(p);
+  };
 
   return (
     <div className="fixed inset-0 z-50 bg-rose-950/80 backdrop-blur-md flex items-center justify-center p-4">
-      <div className="max-w-lg w-full bg-[#0d0812] border-2 border-rose-500 rounded-3xl p-5 sm:p-6 shadow-2xl shadow-rose-600/40 space-y-4">
+      <div className="max-w-lg w-full bg-[#0d0812] border-2 border-rose-500 rounded-3xl p-5 sm:p-6 shadow-2xl shadow-rose-600/40 space-y-4 animate-panel-in">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5 text-rose-400">
             <ShieldAlert className="w-7 h-7 animate-bounce" />
@@ -26,7 +42,7 @@ export const RadarAlertModal: React.FC<RadarAlertModalProps> = ({
             </h2>
           </div>
           <span className="px-3 py-1 rounded-xl bg-rose-600 text-white font-mono font-black text-lg">
-            {secondsLeft}s
+            {liveSec}s
           </span>
         </div>
 
@@ -39,41 +55,41 @@ export const RadarAlertModal: React.FC<RadarAlertModalProps> = ({
         </div>
 
         <p className="text-xs text-slate-300">
-          به‌محض کلیک روی یکی از گزینه‌های زیر، فرمان دفاعی درجا اجرا می‌شود و بازی بدون معطلی ادامه می‌یابد:
+          به‌محض کلیک روی یکی از گزینه‌های زیر، فرمان دفاعی درجا اجرا می‌شود و بازی ادامه می‌یابد:
         </p>
 
         <div className="space-y-2">
           <button
             type="button"
-            onClick={() => onSelectPosture('MAX_INTERCEPT')}
+            onClick={() => choose('MAX_INTERCEPT')}
             className="w-full p-3 rounded-2xl border bg-[#14101c] border-emerald-500/40 hover:bg-emerald-500/20 text-right flex items-center justify-between transition"
           >
             <div>
               <div className="font-black text-xs sm:text-sm text-white">
                 🛡️ شلیک حداکثری پدافند هوایی (+۲۴٪ شانس رهگیری)
               </div>
-              <div className="text-[11px] text-slate-400">بهترین گزینه برای نابود کردن موشک‌های دشمن در آسمان</div>
+              <div className="text-[11px] text-slate-400">بهترین گزینه برای انهدام موشک‌ها و پهپادهای مهاجم</div>
             </div>
             <span className="font-mono text-xs text-amber-300 font-bold shrink-0">$10B</span>
           </button>
 
           <button
             type="button"
-            onClick={() => onSelectPosture('SCRAMBLE_FIGHTERS')}
+            onClick={() => choose('SCRAMBLE_FIGHTERS')}
             className="w-full p-3 rounded-2xl border bg-[#14101c] border-cyan-500/40 hover:bg-cyan-500/20 text-right flex items-center justify-between transition"
           >
             <div>
               <div className="font-black text-xs sm:text-sm text-white flex items-center gap-1.5">
                 <Plane className="w-4 h-4 text-cyan-400" /> بلند کردن فوری جنگنده‌های رهگیر (+۱۸٪ دفاع)
               </div>
-              <div className="text-[11px] text-slate-400">رهگیری هوایی سریع با هزینه کمتر</div>
+              <div className="text-[11px] text-slate-400">رهگیری سریع اسکادران هوایی دشمن</div>
             </div>
             <span className="font-mono text-xs text-cyan-300 font-bold shrink-0">$8B</span>
           </button>
 
           <button
             type="button"
-            onClick={() => onSelectPosture('COUNTER_SALVO')}
+            onClick={() => choose('COUNTER_SALVO')}
             className="w-full p-3 rounded-2xl border bg-[#14101c] border-rose-500/50 hover:bg-rose-500/25 text-right flex items-center justify-between transition"
           >
             <div>
@@ -87,7 +103,7 @@ export const RadarAlertModal: React.FC<RadarAlertModalProps> = ({
 
           <button
             type="button"
-            onClick={() => onSelectPosture('NORMAL')}
+            onClick={() => choose('NORMAL')}
             className="w-full p-2.5 rounded-2xl border bg-slate-900 border-slate-700 hover:bg-slate-800 text-center text-xs font-bold text-slate-300 flex items-center justify-center gap-1.5 transition"
           >
             <Shield className="w-4 h-4 text-slate-400" />

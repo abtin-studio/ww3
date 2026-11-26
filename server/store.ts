@@ -4,6 +4,7 @@ import { GameRoomState } from '../shared/types.js';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const STORE_FILE = path.join(DATA_DIR, 'lobbies.json');
+const SAVES_DIR = path.join(DATA_DIR, 'saves');
 
 export class RoomStore {
   private rooms = new Map<string, GameRoomState>();
@@ -18,13 +19,12 @@ export class RoomStore {
       if (!fs.existsSync(STORE_FILE)) return;
       const raw = fs.readFileSync(STORE_FILE, 'utf-8');
       const parsed = JSON.parse(raw) as Record<string, GameRoomState>;
-      const cutoff = Date.now() - 1000 * 60 * 60 * 72;
+      const cutoff = Date.now() - 1000 * 60 * 60 * 96;
       for (const [code, room] of Object.entries(parsed)) {
-        // Strict v3 schema guard so legacy v1/v2 rooms never cause missing-field crashes
         if (
-          room.schemaVersion === 3 &&
+          room.schemaVersion === 4 &&
           room.createdAt >= cutoff &&
-          room.countries?.IR?.damagedInfra &&
+          room.countries?.IR?.relations &&
           room.minorNations
         ) {
           for (const p of room.players) p.connected = false;
@@ -46,8 +46,42 @@ export class RoomStore {
     this.scheduleSave();
   }
 
+  public delete(code: string): void {
+    this.rooms.delete(code.toUpperCase());
+    this.scheduleSave();
+  }
+
   public values(): IterableIterator<GameRoomState> {
     return this.rooms.values();
+  }
+
+  public savePermanentSnapshot(room: GameRoomState): string {
+    try {
+      if (!fs.existsSync(SAVES_DIR)) {
+        fs.mkdirSync(SAVES_DIR, { recursive: true });
+      }
+      const cleanCode = `SV-${room.roomCode}-${room.round}`;
+      const filePath = path.join(SAVES_DIR, `${cleanCode}.json`);
+      fs.writeFileSync(filePath, JSON.stringify(room), 'utf-8');
+      return cleanCode;
+    } catch (err) {
+      console.warn('Failed to write snapshot:', err);
+      return `SV-${room.roomCode}`;
+    }
+  }
+
+  public loadPermanentSnapshot(saveCode: string): GameRoomState | null {
+    try {
+      const safe = saveCode.trim().toUpperCase().replace(/[^A-Z0-9-]/g, '');
+      const filePath = path.join(SAVES_DIR, `${safe}.json`);
+      if (!fs.existsSync(filePath)) return null;
+      const raw = fs.readFileSync(filePath, 'utf-8');
+      const parsed = JSON.parse(raw) as GameRoomState;
+      if (parsed.schemaVersion !== 4 || !parsed.countries?.IR) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
   }
 
   public scheduleSave(): void {

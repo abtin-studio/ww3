@@ -13,6 +13,7 @@ import {
   Wrench,
   AlertTriangle,
   Lock,
+  DollarSign,
 } from 'lucide-react';
 import {
   CabinetSuggestion,
@@ -23,6 +24,9 @@ import {
   getIndigenousOrAllyWeaponCost,
   getInfraNextCost,
   getMaxBuildsPerRound,
+  getMaxCovertOrdersPerRound,
+  getMaxMilitaryOrdersPerRound,
+  getMaxUpgradesPerRound,
   getSmartCabinetAdvice,
   getUpgradeNextCost,
 } from '../../shared/advisor';
@@ -47,7 +51,8 @@ interface MyCountryPanelProps {
   onInstantInfra: (infraType: InfrastructureType) => void;
   onEmergencyAction: (kind: EmergencyActionKind) => void;
   onInstantWeapon: (weaponId: string, quantity: number) => void;
-  onSpotTrade: (resource: 'OIL' | 'GAS' | 'FOOD' | 'URANIUM', mode: 'BUY' | 'SELL') => void;
+  onSellWeapon: (weaponId: string, quantity: number) => void;
+  onSpotTrade: (resource: 'OIL' | 'GAS' | 'FOOD' | 'WATER' | 'URANIUM', mode: 'BUY' | 'SELL') => void;
   onToggleAutoSell: () => void;
   onSetChokepoint: (status: ChokepointStatus) => void;
   onCancelOrder: (orderId: string) => void;
@@ -69,6 +74,7 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
   onInstantInfra,
   onEmergencyAction,
   onInstantWeapon,
+  onSellWeapon,
   onSpotTrade,
   onToggleAutoSell,
   onSetChokepoint,
@@ -77,14 +83,14 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
   onOpenCountryDrawer,
 }) => {
   const [subTab, setSubTab] = useState<'COMMAND' | 'UPGRADES' | 'INFRA' | 'WEAPONS'>('COMMAND');
-  const [weaponFilter, setWeaponFilter] = useState<'ALL' | WeaponCategory>('ALL');
+  const [weaponFilter, setWeaponFilter] = useState<'ALL' | 'OWNED' | WeaponCategory>('ALL');
 
   const me = room.countries[countryId];
   if (!me) return null;
 
   if (me.isEliminated) {
     return (
-      <div className="bg-rose-950/30 border-2 border-rose-500/60 rounded-3xl p-6 text-center space-y-3">
+      <div className="bg-rose-950/30 border-2 border-rose-500/60 rounded-3xl p-6 text-center space-y-3 animate-panel-in">
         <div className="text-3xl">🥀</div>
         <h2 className="text-lg sm:text-xl font-black text-rose-300">
           سقوط دولت و حذف از فرماندهی فعال
@@ -106,9 +112,14 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
   const oilSellCashB = Math.max(8, Math.round(spot.oilSell50B * sellFactor));
   const gasSellCashB = Math.max(8, Math.round(spot.gasSell50B * sellFactor));
   const foodSellCashB = Math.max(8, Math.round(spot.foodSell50B * sellFactor));
+  const waterSellCashB = Math.max(7, Math.round(spot.waterSell50B * sellFactor));
+
   const suggestions = getSmartCabinetAdvice(room, countryId);
   const myChokepoint = Object.values(room.chokepoints).find((cp) => cp.controller === countryId);
   const maxBuilds = getMaxBuildsPerRound(me);
+  const maxUps = getMaxUpgradesPerRound(me);
+  const maxMilOps = getMaxMilitaryOrdersPerRound(me);
+  const maxCovOps = getMaxCovertOrdersPerRound(me);
   const totalRuins = Object.values(me.damagedInfra || {}).reduce((a, b) => a + b, 0);
 
   const gridEmergencyCost = getEmergencyActionCost(me, 'REPAIR_GRID');
@@ -130,15 +141,17 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
     }
   };
 
-  const filteredWeapons = Object.values(WEAPONS_CATALOG).filter(
-    (w) => weaponFilter === 'ALL' || w.category === weaponFilter
-  );
+  const filteredWeapons = Object.values(WEAPONS_CATALOG).filter((w) => {
+    if (weaponFilter === 'ALL') return true;
+    if (weaponFilter === 'OWNED') return (me.weapons[w.id] || 0) > 0;
+    return w.category === weaponFilter;
+  });
 
   return (
-    <div className="space-y-3.5">
-      {/* Regime Crisis Warning Banner (When under heavy bombardment/devastation!) */}
+    <div className="space-y-3.5 animate-panel-in">
+      {/* Regime Crisis Warning Banner */}
       {(me.devastation >= 45 || me.approval <= 25 || me.regimeCrisisStreak > 0) && (
-        <div className="bg-rose-950/50 border border-rose-500 rounded-2xl p-3.5 space-y-2 animate-pulse">
+        <div className="bg-rose-950/50 border border-rose-500 rounded-2xl p-3.5 space-y-1.5 animate-pulse">
           <div className="flex items-center justify-between text-xs font-black text-rose-300">
             <span className="flex items-center gap-1.5">
               <AlertTriangle className="w-4 h-4" />
@@ -146,18 +159,40 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
             </span>
           </div>
           <p className="text-[11px] text-rose-100 leading-relaxed">
-            اگر ویرانی به ۹۵٪ برسد یا رضایت مردم دو ماه پیاپی بحرانی بماند، دولت سقوط کرده و از بازی حذف می‌شوید! همین حالا از دکمه‌های «بازسازی اضطراری» استفاده کنید.
+            اگر بحران دو ماه پیاپی مهار نشود دولت سقوط می‌کند! همین حالا از «بسته امداد و نجات دولت» استفاده کنید.
           </p>
         </div>
       )}
 
+      {/* Partial Occupation Alert on Homeland */}
+      {me.integrityPct < 100 && me.occupierId && (
+        <div className="bg-amber-950/40 border border-amber-500/50 rounded-2xl p-3 flex items-center justify-between gap-2 text-xs">
+          <div className="text-amber-200 font-bold">
+            ⚔️ {100 - me.integrityPct}٪ از مرزهای کشور در اشغال {room.countries[me.occupierId]?.nameFa} است!
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              sound.playClick();
+              onOpenCountryDrawer(me.occupierId!, 'WAR');
+            }}
+            className="px-3 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black shrink-0"
+          >
+            پاتک آزادسازی خاک
+          </button>
+        </div>
+      )}
+
       {/* 4 Sub-Tabs */}
-      <div className="grid grid-cols-4 gap-1.5 bg-[#08101f] p-1.5 rounded-2xl border border-slate-800 text-[11px] sm:text-xs font-black">
+      <div className="grid grid-cols-4 gap-1.5 glass-panel p-1.5 rounded-2xl text-[11px] sm:text-xs font-black">
         <button
           type="button"
-          onClick={() => setSubTab('COMMAND')}
+          onClick={() => {
+            sound.playClick();
+            setSubTab('COMMAND');
+          }}
           className={`py-2.5 rounded-xl flex items-center justify-center gap-1 transition ${
-            subTab === 'COMMAND' ? 'bg-emerald-500 text-slate-950' : 'text-slate-300 hover:bg-slate-800/70'
+            subTab === 'COMMAND' ? 'bg-emerald-500 text-slate-950 shadow' : 'text-slate-300 hover:bg-slate-800/70'
           }`}
         >
           <Coins className="w-3.5 h-3.5" />
@@ -165,32 +200,41 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
         </button>
         <button
           type="button"
-          onClick={() => setSubTab('UPGRADES')}
+          onClick={() => {
+            sound.playClick();
+            setSubTab('UPGRADES');
+          }}
           className={`py-2.5 rounded-xl flex items-center justify-center gap-1 transition ${
-            subTab === 'UPGRADES' ? 'bg-purple-400 text-slate-950' : 'text-slate-300 hover:bg-slate-800/70'
+            subTab === 'UPGRADES' ? 'bg-purple-400 text-slate-950 shadow' : 'text-slate-300 hover:bg-slate-800/70'
           }`}
         >
           <ArrowUpCircle className="w-3.5 h-3.5" />
-          دکترین (۱۰ سطح)
+          دکترین ({me.upgradesUsedThisRound}/{maxUps})
         </button>
         <button
           type="button"
-          onClick={() => setSubTab('INFRA')}
+          onClick={() => {
+            sound.playClick();
+            setSubTab('INFRA');
+          }}
           className={`py-2.5 rounded-xl flex items-center justify-center gap-1 relative transition ${
-            subTab === 'INFRA' ? 'bg-cyan-400 text-slate-950' : 'text-slate-300 hover:bg-slate-800/70'
+            subTab === 'INFRA' ? 'bg-cyan-400 text-slate-950 shadow' : 'text-slate-300 hover:bg-slate-800/70'
           }`}
         >
           <Building2 className="w-3.5 h-3.5" />
-          ساخت و بازسازی
+          ساخت و علم
           {totalRuins > 0 && (
             <span className="px-1.5 rounded-full bg-rose-600 text-white text-[10px]">{totalRuins}</span>
           )}
         </button>
         <button
           type="button"
-          onClick={() => setSubTab('WEAPONS')}
+          onClick={() => {
+            sound.playClick();
+            setSubTab('WEAPONS');
+          }}
           className={`py-2.5 rounded-xl flex items-center justify-center gap-1 transition ${
-            subTab === 'WEAPONS' ? 'bg-amber-400 text-slate-950' : 'text-slate-300 hover:bg-slate-800/70'
+            subTab === 'WEAPONS' ? 'bg-amber-400 text-slate-950 shadow' : 'text-slate-300 hover:bg-slate-800/70'
           }`}
         >
           <Shield className="w-3.5 h-3.5" />
@@ -200,39 +244,35 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
 
       {subTab === 'COMMAND' && (
         <div className="space-y-3.5">
-          {/* Empire & Regime Vitals Strip */}
+          {/* Empire & Monthly Operational Quotas Strip */}
           <div className="grid grid-cols-3 gap-2 text-xs">
-            <div className="bg-[#0b1324] border border-slate-800 rounded-xl p-2.5">
-              <div className="text-slate-400 text-[10px]">تمامیت ارضی خاک</div>
-              <div className="font-mono font-black text-emerald-300 text-sm mt-0.5">{me.integrityPct}٪</div>
-            </div>
-            <div className="bg-[#0b1324] border border-slate-800 rounded-xl p-2.5">
-              <div className="text-slate-400 text-[10px]">شاخص بحران و ویرانی</div>
-              <div
-                className={`font-mono font-black text-sm mt-0.5 ${
-                  me.devastation >= 50 ? 'text-rose-400' : me.devastation >= 25 ? 'text-amber-300' : 'text-cyan-300'
-                }`}
-              >
-                {me.devastation}٪
+            <div className="glass-card rounded-xl p-2.5">
+              <div className="text-slate-400 text-[10px]">تمامیت ارضی و قلمرو</div>
+              <div className="font-mono font-black text-emerald-300 text-xs sm:text-sm mt-0.5">
+                {me.integrityPct}٪ • 🏴 {econ.territoriesAnnexed} فتح
               </div>
             </div>
-            <div className="bg-[#0b1324] border border-slate-800 rounded-xl p-2.5">
-              <div className="text-slate-400 text-[10px]">کشورهای ضمیمه‌شده</div>
-              <div className="font-mono font-black text-amber-300 text-sm mt-0.5">
-                🏴 {econ.territoriesAnnexed} قلمرو
+            <div className="glass-card rounded-xl p-2.5">
+              <div className="text-slate-400 text-[10px]">سهمیه حمله نظامی ماه</div>
+              <div className="font-mono font-black text-rose-300 text-xs sm:text-sm mt-0.5">
+                ⚔️ {me.militaryOrdersUsedThisRound} / {maxMilOps}
+              </div>
+            </div>
+            <div className="glass-card rounded-xl p-2.5">
+              <div className="text-slate-400 text-[10px]">سهمیه سایبری و جاسوسی</div>
+              <div className="font-mono font-black text-purple-300 text-xs sm:text-sm mt-0.5">
+                🕵️ {me.covertOrdersUsedThisRound} / {maxCovOps}
               </div>
             </div>
           </div>
 
-          {/* ALWAYS-AVAILABLE EMERGENCY RECONSTRUCTION & CRISIS RECOVERY! */}
+          {/* Emergency Reconstruction */}
           {(me.devastation > 0 || me.powerGrid < 95 || me.radarIntegrity < 95 || me.approval < 80) && (
-            <div className="bg-[#0d1629] border border-cyan-500/35 rounded-2xl p-3.5 space-y-2.5">
-              <div className="flex items-center justify-between">
-                <h3 className="text-xs sm:text-sm font-black text-cyan-300 flex items-center gap-1.5">
-                  <Wrench className="w-4 h-4" />
-                  ستاد بازسازی اضطراری و مهار بحران (همیشه فعال، حتی در سقف زیرساخت!)
-                </h3>
-              </div>
+            <div className="glass-card border-cyan-500/35 rounded-2xl p-3.5 space-y-2.5">
+              <h3 className="text-xs sm:text-sm font-black text-cyan-300 flex items-center gap-1.5">
+                <Wrench className="w-4 h-4" />
+                ستاد بازسازی اضطراری و مهار بحران (بدون مصرف سهمیه ساخت)
+              </h3>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
                 <button
                   type="button"
@@ -242,7 +282,7 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
                   }}
                   className="p-2.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-200 font-bold text-right"
                 >
-                  <div>⚡ ترمیم فوری شبکه برق</div>
+                  <div>⚡ ترمیم فوری برق</div>
                   <div className="text-[10px] text-slate-300 mt-0.5">+۲۴٪ برق و -۱۴٪ ویرانی (${gridEmergencyCost}B)</div>
                 </button>
                 <button
@@ -253,8 +293,8 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
                   }}
                   className="p-2.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/40 text-cyan-200 font-bold text-right"
                 >
-                  <div>📡 بازسازی رادار و ضدجاسوسی</div>
-                  <div className="text-[10px] text-slate-300 mt-0.5">+۴۵٪ رادار و تقویت ردیابی (${radarEmergencyCost}B)</div>
+                  <div>📡 بازسازی رادار و امنیت</div>
+                  <div className="text-[10px] text-slate-300 mt-0.5">+۴۵٪ رادار و ضدجاسوسی (${radarEmergencyCost}B)</div>
                 </button>
                 <button
                   type="button"
@@ -264,24 +304,25 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
                   }}
                   className="p-2.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-200 font-bold text-right"
                 >
-                  <div>🏥 بسته امداد و نجات دولت</div>
-                  <div className="text-[10px] text-slate-300 mt-0.5">+۱۴٪ رضایت و -۲۰٪ بحران (${reliefEmergencyCost}B)</div>
+                  <div>🏥 بسته امداد ملی</div>
+                  <div className="text-[10px] text-slate-300 mt-0.5">+۱۴٪ رضایت، آب/غذا و -۲۰٪ ویرانی (${reliefEmergencyCost}B)</div>
                 </button>
               </div>
             </div>
           )}
 
-          {/* 1-Click Global Commodity Spot Market */}
-          <div className="bg-[#0b1426] border border-amber-500/35 rounded-2xl p-3.5 space-y-3">
+          {/* 1-Click Global Spot Market (Oil, Gas, Food & Water — Items #23 & #24!) */}
+          <div className="glass-card border-amber-500/35 rounded-2xl p-3.5 space-y-3">
             <div className="flex items-center justify-between flex-wrap gap-2">
-              <div>
-                <h3 className="text-xs sm:text-sm font-black text-amber-300">
-                  🛢️ بورس جهانی انرژی و غلات (معامله آنی ۱-کلیکی)
-                </h3>
-              </div>
+              <h3 className="text-xs sm:text-sm font-black text-amber-300">
+                🛢️ بورس جهانی سوخت، گاز، غذا و آب (معامله آنی ۱-کلیکی)
+              </h3>
               <button
                 type="button"
-                onClick={onToggleAutoSell}
+                onClick={() => {
+                  sound.playClick();
+                  onToggleAutoSell();
+                }}
                 className={`px-2.5 py-1 rounded-xl text-[11px] font-black border transition ${
                   me.autoSellSurplus
                     ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
@@ -292,7 +333,7 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
               </button>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
               <button
                 type="button"
                 onClick={() => {
@@ -301,8 +342,8 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
                 }}
                 className="p-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-200 font-bold text-center"
               >
-                💰 فروش ۵۰ نفت
-                <span className="block font-mono text-emerald-300 text-xs mt-0.5">+${oilSellCashB}B</span>
+                🛢️ فروش ۵۰ نفت
+                <span className="block font-mono text-emerald-300 mt-0.5">+${oilSellCashB}B</span>
               </button>
               <button
                 type="button"
@@ -310,11 +351,12 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
                   sound.playOrderConfirm();
                   onSpotTrade('OIL', 'BUY');
                 }}
-                className="p-2 rounded-xl bg-[#070e1c] hover:bg-slate-800 border border-slate-700 text-amber-200 font-bold text-center"
+                className="p-2 rounded-xl bg-[#060c18] hover:bg-slate-800 border border-slate-700 text-amber-200 font-bold text-center"
               >
                 🛒 خرید ۵۰ نفت
-                <span className="block font-mono text-slate-300 text-xs mt-0.5">-${spot.oilBuy50B}B</span>
+                <span className="block font-mono text-slate-300 mt-0.5">-${spot.oilBuy50B}B</span>
               </button>
+
               <button
                 type="button"
                 onClick={() => {
@@ -323,8 +365,8 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
                 }}
                 className="p-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-200 font-bold text-center"
               >
-                💰 فروش ۵۰ گاز
-                <span className="block font-mono text-emerald-300 text-xs mt-0.5">+${gasSellCashB}B</span>
+                🔥 فروش ۵۰ گاز
+                <span className="block font-mono text-emerald-300 mt-0.5">+${gasSellCashB}B</span>
               </button>
               <button
                 type="button"
@@ -332,11 +374,12 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
                   sound.playOrderConfirm();
                   onSpotTrade('GAS', 'BUY');
                 }}
-                className="p-2 rounded-xl bg-[#070e1c] hover:bg-slate-800 border border-slate-700 text-cyan-200 font-bold text-center"
+                className="p-2 rounded-xl bg-[#060c18] hover:bg-slate-800 border border-slate-700 text-cyan-200 font-bold text-center"
               >
                 🛒 خرید ۵۰ گاز
-                <span className="block font-mono text-slate-300 text-xs mt-0.5">-${spot.gasBuy50B}B</span>
+                <span className="block font-mono text-slate-300 mt-0.5">-${spot.gasBuy50B}B</span>
               </button>
+
               <button
                 type="button"
                 onClick={() => {
@@ -345,8 +388,8 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
                 }}
                 className="p-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-200 font-bold text-center"
               >
-                💰 فروش ۵۰ غذا
-                <span className="block font-mono text-emerald-300 text-xs mt-0.5">+${foodSellCashB}B</span>
+                🌾 فروش ۵۰ غذا
+                <span className="block font-mono text-emerald-300 mt-0.5">+${foodSellCashB}B</span>
               </button>
               <button
                 type="button"
@@ -354,26 +397,49 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
                   sound.playOrderConfirm();
                   onSpotTrade('FOOD', 'BUY');
                 }}
-                className="p-2 rounded-xl bg-[#070e1c] hover:bg-slate-800 border border-slate-700 text-lime-200 font-bold text-center"
+                className="p-2 rounded-xl bg-[#060c18] hover:bg-slate-800 border border-slate-700 text-lime-200 font-bold text-center"
               >
                 🛒 خرید ۵۰ غذا
-                <span className="block font-mono text-slate-300 text-xs mt-0.5">-${spot.foodBuy50B}B</span>
+                <span className="block font-mono text-slate-300 mt-0.5">-${spot.foodBuy50B}B</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  sound.playOrderConfirm();
+                  onSpotTrade('WATER', 'SELL');
+                }}
+                className="p-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-200 font-bold text-center"
+              >
+                💧 فروش ۵۰ آب
+                <span className="block font-mono text-emerald-300 mt-0.5">+${waterSellCashB}B</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  sound.playOrderConfirm();
+                  onSpotTrade('WATER', 'BUY');
+                }}
+                className="p-2 rounded-xl bg-[#060c18] hover:bg-slate-800 border border-slate-700 text-sky-200 font-bold text-center"
+              >
+                🛒 تامین ۵۰ آب
+                <span className="block font-mono text-slate-300 mt-0.5">-${spot.waterBuy50B}B</span>
               </button>
             </div>
           </div>
 
           {/* Smart Cabinet Suggestions */}
           {suggestions.length > 0 && (
-            <div className="bg-[#0b1324] border border-emerald-500/30 rounded-2xl p-3.5 space-y-2">
+            <div className="glass-card border-emerald-500/30 rounded-2xl p-3.5 space-y-2">
               <h3 className="text-xs sm:text-sm font-black text-emerald-300 flex items-center gap-1.5">
                 <Sparkles className="w-4 h-4" />
-                پیشنهادهای هوشمند کابینه
+                پیشنهادهای هوشمند مشاوران کابینه
               </h3>
               <div className="grid grid-cols-1 gap-2">
                 {suggestions.map((s) => (
                   <div
                     key={s.id}
-                    className="p-3 rounded-xl bg-[#070d19] border border-slate-800 flex items-center justify-between gap-3"
+                    className="p-3 rounded-xl bg-[#060c18] border border-slate-800 flex items-center justify-between gap-3"
                   >
                     <div>
                       <span className="text-[10px] font-bold text-amber-300">{s.ministerFa}</span>
@@ -394,41 +460,47 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
           )}
 
           {/* Queued Strategic Operations */}
-          <div className="bg-[#0b1324] border border-slate-800 rounded-2xl p-3.5 space-y-2.5">
-            <div className="flex items-center justify-between">
+          <div className="glass-card rounded-2xl p-3.5 space-y-2.5">
+            <div className="flex items-center justify-between flex-wrap gap-1">
               <h3 className="text-xs sm:text-sm font-black text-white">
-                🎯 عملیات‌های ثبت‌شده این ماه ({me.orders.length} / ۴)
+                🎯 فرامین عملیاتی این ماه ({me.orders.length} عملیات فعال)
               </h3>
               <span className="text-xs text-emerald-400 font-mono">
                 تراز ماه بعد: {econ.netIncomeB >= 0 ? `+$${econ.netIncomeB}B` : `-$${Math.abs(econ.netIncomeB)}B`}
+                {econ.overextensionPenaltyB > 0 ? ` (هزینه نگهداری امپراتوری: -$${econ.overextensionPenaltyB}B)` : ''}
               </span>
             </div>
 
             {me.orders.length === 0 ? (
-              <div className="py-3 px-3 text-center text-xs text-slate-400 bg-[#070d19] rounded-xl border border-slate-800/80">
-                روی هر یک از ۱۹۵ کشور نقشه کلیک کنید تا عملیات هوایی، دریایی، زمینی، کشورگشایی یا جاسوسی ثبت شود!
+              <div className="py-3 px-3 text-center text-xs text-slate-400 bg-[#060c18] rounded-xl border border-slate-800/80">
+                روی هر کشوری در نقشه کلیک کنید تا عملیات نظامی، دیپلماسی (صلح/اولتیماتوم/بذر نفرت) یا جاسوسی اجرا شود!
               </div>
             ) : (
               <div className="space-y-2">
                 {me.orders.map((ord) => (
                   <div
                     key={ord.id}
-                    className="px-3 py-2.5 rounded-xl bg-[#070d19] border border-slate-800 flex items-center justify-between gap-2 text-xs"
+                    className="px-3 py-2.5 rounded-xl bg-[#060c18] border border-slate-800 flex items-center justify-between gap-2 text-xs"
                   >
                     <div>
                       <div className="font-bold text-white">
                         {ord.summaryFa}{' '}
-                        <span className="text-emerald-300 font-mono">({ord.estimatedSuccessPct}٪ موفقیت)</span>
+                        <span className="text-emerald-300 font-mono">({ord.estimatedSuccessPct}٪ شانس)</span>
                       </div>
-                      <div className="text-[11px] text-slate-400">{ord.expectedImpactFa}</div>
+                      <div className="text-[11px] text-slate-400">
+                        {ord.expectedImpactFa} {ord.fuelCost > 0 ? `• سوخت مصرفی: ${ord.fuelCost}` : ''}
+                      </div>
                     </div>
                     <button
                       type="button"
-                      onClick={() => onCancelOrder(ord.id)}
+                      onClick={() => {
+                        sound.playClick();
+                        onCancelOrder(ord.id);
+                      }}
                       className="px-2.5 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 font-bold flex items-center gap-1 shrink-0"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
-                      لغو
+                      لغو و بازگشت وجه
                     </button>
                   </div>
                 ))}
@@ -438,19 +510,19 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
 
           {/* Domain Military Breakdown */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-            <div className="bg-[#0b1324] border border-slate-800 rounded-xl p-2.5">
-              <div className="text-slate-400 text-[10px]">✈️ قدرت هوایی</div>
+            <div className="glass-card rounded-xl p-2.5">
+              <div className="text-slate-400 text-[10px]">✈️ هوایی ({mil.fighterCount} واحد)</div>
               <div className="text-sm font-black text-sky-300 font-mono">{mil.airPower}</div>
             </div>
-            <div className="bg-[#0b1324] border border-slate-800 rounded-xl p-2.5">
-              <div className="text-slate-400 text-[10px]">⚓ قدرت دریایی</div>
+            <div className="glass-card rounded-xl p-2.5">
+              <div className="text-slate-400 text-[10px]">⚓ دریایی ({mil.navalCount} واحد)</div>
               <div className="text-sm font-black text-cyan-300 font-mono">{mil.navalPower}</div>
             </div>
-            <div className="bg-[#0b1324] border border-slate-800 rounded-xl p-2.5">
-              <div className="text-slate-400 text-[10px]">🚜 قدرت زرهی/زمینی</div>
+            <div className="glass-card rounded-xl p-2.5">
+              <div className="text-slate-400 text-[10px]">🚜 زرهی ({mil.armorCount} واحد)</div>
               <div className="text-sm font-black text-amber-300 font-mono">{mil.groundPower}</div>
             </div>
-            <div className="bg-[#0b1324] border border-slate-800 rounded-xl p-2.5">
+            <div className="glass-card rounded-xl p-2.5">
               <div className="text-slate-400 text-[10px]">🛡️ رهگیری پدافند</div>
               <div className="text-sm font-black text-emerald-300 font-mono">{mil.interceptRate}٪</div>
             </div>
@@ -458,14 +530,19 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
         </div>
       )}
 
-      {/* 8 NATIONAL DOCTRINE PILLARS (Lv.1 -> Lv.10) */}
+      {/* 8 NATIONAL DOCTRINE PILLARS (UPGRADABLE MONTHLY LIMIT VIA SCIENCE ACADEMY — ITEM #16!) */}
       {subTab === 'UPGRADES' && (
         <div className="space-y-3">
-          <div className="p-3 rounded-2xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-between text-xs text-purple-200">
-            <span>⭐ ۸ دکترین راهبردی تا سطح ۱۰ (مخصوص کمپین‌های بلندمدت)</span>
-            <span className="font-mono font-bold text-white">
-              ظرفیت پژوهش این ماه: {1 - me.upgradesUsedThisRound}/1
-            </span>
+          <div className="p-3 rounded-2xl bg-purple-500/10 border border-purple-500/30 space-y-1 text-xs text-purple-200">
+            <div className="flex items-center justify-between font-bold">
+              <span>⭐ ۸ دکترین راهبردی ملی (Lv.1 تا Lv.10)</span>
+              <span className="font-mono text-white">
+                ظرفیت باقی‌مانده این ماه: {maxUps - me.upgradesUsedThisRound} از {maxUps}
+              </span>
+            </div>
+            <p className="text-[11px] text-purple-300/90">
+              💡 با ساخت و ارتقای «🔬 قطب علم و دانشگاه ملی» در تب ساخت‌وساز به سطح ۵ و ۱۱، ظرفیت پژوهش ماهانه به <strong>۲ و ۳ جهش در هر ماه</strong> افزایش می‌یابد!
+            </p>
           </div>
 
           <div className="grid grid-cols-1 gap-2.5">
@@ -474,12 +551,12 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
               const lv = me.upgrades[track] || 0;
               const maxed = lv >= spec.maxLevel;
               const cost = getUpgradeNextCost(me, track, room.settings.difficulty);
-              const usedSlot = me.upgradesUsedThisRound >= 1;
+              const usedSlot = me.upgradesUsedThisRound >= maxUps;
 
               return (
                 <div
                   key={track}
-                  className="p-3.5 rounded-2xl bg-[#0b1324] border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  className="p-3.5 rounded-2xl glass-card flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                 >
                   <div className="space-y-1">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -515,7 +592,7 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
                     {maxed
                       ? 'تکمیل (Lv.10)'
                       : usedSlot
-                      ? `پژوهش ماه بعد ($${cost}B)`
+                      ? `تکمیل سهمیه ماه ($${cost}B)`
                       : `ارتقا به سطح ${lv + 1} ($${cost}B)`}
                   </button>
                 </div>
@@ -525,18 +602,18 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
         </div>
       )}
 
-      {/* INFRASTRUCTURES, WAR RUINS RECONSTRUCTION & CHOKEPOINTS */}
+      {/* INFRASTRUCTURES, SCIENCE ACADEMY, RECONSTRUCTION & CHOKEPOINTS */}
       {subTab === 'INFRA' && (
         <div className="space-y-3.5">
           <div className="p-3 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-between text-xs text-cyan-200">
-            <span>🏗️ ظرفیت مهندسی و بازسازی در این ماه (ارتقا با ابرصنعت)</span>
+            <span>🏗️ ظرفیت عمرانی و ساخت‌وساز این ماه</span>
             <span className="font-mono font-black text-white">
-              باقی‌مانده این ماه: {maxBuilds - me.buildsUsedThisRound} / {maxBuilds}
+              باقی‌مانده: {maxBuilds - me.buildsUsedThisRound} / {maxBuilds}
             </span>
           </div>
 
           {myChokepoint && (
-            <div className="bg-[#0d182e] border border-amber-500/40 rounded-2xl p-3.5 space-y-2.5">
+            <div className="glass-card border-amber-500/40 rounded-2xl p-3.5 space-y-2.5">
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <div className="flex items-center gap-2">
                   <Anchor className="w-5 h-5 text-amber-400" />
@@ -565,7 +642,7 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
                       className={`px-3 py-1.5 rounded-xl font-bold border ${
                         myChokepoint.status === st
                           ? 'bg-amber-400 text-slate-950 border-amber-300'
-                          : 'bg-[#070d19] text-slate-300 border-slate-700'
+                          : 'bg-[#060c18] text-slate-300 border-slate-700'
                       }`}
                     >
                       {lbl}
@@ -579,7 +656,7 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
             {(Object.keys(INFRASTRUCTURE_CATALOG) as InfrastructureType[]).map((type) => {
               const spec = INFRASTRUCTURE_CATALOG[type];
-              const level = me.infrastructure[type];
+              const level = me.infrastructure[type] || 0;
               const ruins = me.damagedInfra?.[type] || 0;
               const costInfo = getInfraNextCost(me, type, room.settings.difficulty);
               const pct = Math.round((level / spec.maxLevel) * 100);
@@ -591,7 +668,9 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
                   className={`p-3.5 rounded-2xl border flex flex-col justify-between gap-2.5 ${
                     ruins > 0
                       ? 'bg-rose-950/20 border-rose-500/45'
-                      : 'bg-[#0b1324] border-slate-800'
+                      : type === 'SCIENCE_ACADEMY'
+                      ? 'glass-card border-purple-500/40'
+                      : 'glass-card'
                   }`}
                 >
                   <div>
@@ -623,6 +702,8 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
                     className={`w-full py-2 rounded-xl font-black text-xs disabled:opacity-40 ${
                       costInfo.isRebuild
                         ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
+                        : type === 'SCIENCE_ACADEMY'
+                        ? 'bg-purple-400 hover:bg-purple-300 text-slate-950'
                         : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950'
                     }`}
                   >
@@ -631,7 +712,7 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
                       : costInfo.isRebuild
                       ? `🔧 بازسازی ویرانه جنگی ($${costInfo.costB}B)`
                       : level >= spec.maxLevel
-                      ? 'در سقف ظرفیت (۲۰/۲۰)'
+                      ? `در سقف ظرفیت (${spec.maxLevel}/${spec.maxLevel})`
                       : `احداث سطح جدید ($${costInfo.costB}B)`}
                   </button>
                 </div>
@@ -641,13 +722,14 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
         </div>
       )}
 
-      {/* INDIGENOUS & FOREIGN ARMS */}
+      {/* DISTINCT WEAPONS + BUY & SELL SURPLUS ARMS (ITEM #22!) */}
       {subTab === 'WEAPONS' && (
         <div className="space-y-3">
           <div className="flex flex-wrap gap-1.5 text-xs">
             {(
               [
                 ['ALL', 'همه'],
+                ['OWNED', '🎖️ موجودی ارتش من'],
                 ['FIGHTER', '✈️ جنگنده'],
                 ['BOMBER', '💣 بمب‌افکن'],
                 ['DRONE', '🛸 پهپاد'],
@@ -660,7 +742,10 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
               <button
                 key={cat}
                 type="button"
-                onClick={() => setWeaponFilter(cat as 'ALL' | WeaponCategory)}
+                onClick={() => {
+                  sound.playClick();
+                  setWeaponFilter(cat as 'ALL' | 'OWNED' | WeaponCategory);
+                }}
                 className={`px-2.5 py-1.5 rounded-xl font-bold border ${
                   weaponFilter === cat
                     ? 'bg-amber-400 text-slate-950 border-amber-300'
@@ -681,11 +766,14 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
               return (
                 <div
                   key={w.id}
-                  className="p-3.5 rounded-2xl bg-[#0b1324] border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  className="p-3.5 rounded-2xl glass-card flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                 >
                   <div className="space-y-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-black text-sm text-white">{w.nameFa}</span>
+                      <span className="px-2 py-0.5 rounded-md bg-indigo-500/20 border border-indigo-500/35 text-indigo-200 text-[10px] font-bold">
+                        {w.roleTagFa}
+                      </span>
                       {owned > 0 && (
                         <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 font-mono text-xs font-bold">
                           موجودی: ×{owned}
@@ -693,14 +781,18 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
                       )}
                       {access.isAllyLicensed && (
                         <span className="px-2 py-0.5 rounded-md bg-cyan-500/15 text-cyan-300 text-[10px] font-bold">
-                          تحت لیسانس متحد
+                          لیسانس متحد
                         </span>
                       )}
                     </div>
                     <p className="text-xs text-slate-400">{w.shortDescFa}</p>
-                    <div className="text-[11px] font-mono text-slate-300">
-                      سازنده: {origin.nameFa} • حمله {w.attackPower} • دفاع {w.defensePower}
-                      {w.interceptBonus > 0 ? ` • رهگیری +${w.interceptBonus}٪` : ''}
+                    <div className="text-[11px] font-mono text-slate-300 flex flex-wrap gap-x-2">
+                      <span>سازنده: {origin.nameFa}</span>
+                      <span>• حمله {w.attackPower}</span>
+                      <span>• دفاع {w.defensePower}</span>
+                      {w.interceptBonus > 0 && <span>• رهگیری +{w.interceptBonus}٪</span>}
+                      {w.stealth >= 70 && <span className="text-sky-300">• رادارگریزی {w.stealth}٪</span>}
+                      <span className="text-amber-300/90">• مصرف سوخت: {w.oilUsePerRound}</span>
                     </div>
                     {access.canBuildDirectly && access.lockedReasonFa && (
                       <div className="text-[11px] text-amber-300 flex items-center gap-1 font-bold">
@@ -709,39 +801,55 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
                     )}
                   </div>
 
-                  {access.canBuildDirectly ? (
-                    <button
-                      type="button"
-                      disabled={Boolean(access.lockedReasonFa)}
-                      onClick={() => {
-                        sound.playLevelUp();
-                        onInstantWeapon(w.id, 1);
-                      }}
-                      className="px-3.5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs flex items-center gap-1.5 shrink-0 disabled:opacity-40"
-                    >
-                      <Factory className="w-4 h-4" />
-                      تولید (${access.finalCostB}B)
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        sound.playOrderConfirm();
-                        onProposeTrade({
-                          to: w.originCountry,
-                          offerType: 'WEAPON',
-                          weaponId: w.id,
-                          amount: 1,
-                          priceB: access.finalCostB,
-                          direction: 'BUY',
-                        });
-                      }}
-                      className="px-3.5 py-2.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 font-bold text-xs flex items-center gap-1.5 shrink-0"
-                    >
-                      <ShoppingCart className="w-4 h-4" />
-                      خرید از {origin.nameFa} (${access.finalCostB}B)
-                    </button>
-                  )}
+                  <div className="flex flex-wrap sm:flex-col gap-1.5 shrink-0">
+                    {access.canBuildDirectly ? (
+                      <button
+                        type="button"
+                        disabled={Boolean(access.lockedReasonFa)}
+                        onClick={() => {
+                          sound.playLevelUp();
+                          onInstantWeapon(w.id, 1);
+                        }}
+                        className="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs flex items-center justify-center gap-1.5 disabled:opacity-40"
+                      >
+                        <Factory className="w-3.5 h-3.5" />
+                        تولید (${access.finalCostB}B)
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          sound.playOrderConfirm();
+                          onProposeTrade({
+                            to: w.originCountry,
+                            offerType: 'WEAPON',
+                            weaponId: w.id,
+                            amount: 1,
+                            priceB: access.finalCostB,
+                            direction: 'BUY',
+                          });
+                        }}
+                        className="px-3.5 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 font-bold text-xs flex items-center justify-center gap-1.5"
+                      >
+                        <ShoppingCart className="w-3.5 h-3.5" />
+                        خرید از {origin.nameFa} (${access.finalCostB}B)
+                      </button>
+                    )}
+
+                    {owned > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          sound.playOrderConfirm();
+                          onSellWeapon(w.id, 1);
+                        }}
+                        className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-emerald-500/20 border border-slate-700 hover:border-emerald-400/50 text-emerald-300 font-bold text-[11px] flex items-center justify-center gap-1"
+                      >
+                        <DollarSign className="w-3 h-3" />
+                        فروش ۱ واحد (+${access.sellRefundB}B)
+                      </button>
+                    )}
+                  </div>
                 </div>
               );
             })}

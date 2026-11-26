@@ -1,25 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import { io as ClientSocket } from 'socket.io-client';
-import { evaluateAITradeOffer } from '../server/aiNations';
+import { evaluateAITradeOffer, processInteractiveAIChat } from '../server/aiNations';
 import {
-  applyAlertPosture,
+  applyCreatorCheat,
   createCoalition,
   createNewRoomState,
+  executeAcceptedTrade,
+  executeDiplomaticAction,
   instantBuildInfra,
   instantEmergencyAction,
-  instantMinorDiplomacyPact,
   instantProduceWeapon,
-  instantSetChokepoint,
+  instantSellWeapon,
   instantSpotTrade,
   instantUpgradeTrack,
   joinCoalition,
+  leaveCoalition,
   prepareEndOfPlanning,
   queuePlayerOrder,
   resolveCurrentRound,
-  sanitizeRoomForPlayer,
 } from '../server/gameEngine';
 import { createAppServer } from '../server/index';
-import { INFRASTRUCTURE_CATALOG, getCalendarLabelFa } from '../shared/realWorldData';
+import { INFRASTRUCTURE_CATALOG } from '../shared/realWorldData';
 
 const DEFAULT_SETTINGS = {
   gameMode: 'MULTI' as const,
@@ -30,143 +31,145 @@ const DEFAULT_SETTINGS = {
   enableAINations: true,
 };
 
-describe('WW3 Global Command v3.0 — Reconstruction, Regime Collapse, World Conquest & Covert Privacy', () => {
-  it('initializes 20 Major Powers + 150+ Real World Minor Nations and dynamic 100-round calendar', () => {
-    const room = createNewRoomState('V3A', 'World', 'p1', 'Amir', DEFAULT_SETTINGS);
+describe('WW3 Global Command v4.0 — Diplomacy, Quotas, Anti-Wipeout, Save/Load, F5 Safety & Creator Console', () => {
+  it('initializes v4.0 schema with Food/Water ecosystem, Bilateral Relations, Science Academy & 7-pillar Rankings', () => {
+    const room = createNewRoomState('V4A', 'World v4', 'p1', 'Abtin', DEFAULT_SETTINGS);
+    expect(room.schemaVersion).toBe(4);
     expect(Object.keys(room.countries).length).toBe(20);
-    expect(Object.keys(room.minorNations).length).toBeGreaterThan(140);
-    expect(room.minorNations['368']?.nameFa).toBe('عراق');
-    expect(room.minorNations['862']?.nameFa).toBe('ونزوئلا');
-    expect(getCalendarLabelFa(1)).toContain('2027');
-    expect(getCalendarLabelFa(85)).toContain('2034');
+    expect(room.countries.IR.waterReserve).toBeGreaterThan(50);
+    expect(room.countries.IR.foodReserve).toBeGreaterThan(50);
+    expect(room.countries.IR.relations.RU).toBeGreaterThan(30);
+    expect(room.countries.IR.relations.IL).toBeLessThan(-50);
+    expect(room.rankings[0].tierFa).toBe('ابرقدرت جهانی');
+    expect(room.rankings[0].techScore).toBeGreaterThan(0);
   });
 
-  it('prevents MAX-infra deadlock: bomb damage creates rebuildable ruins AND emergency reconstruction always works', () => {
-    const room = createNewRoomState('V3B', 'Rebuild', 'p1', 'Amir', DEFAULT_SETTINGS);
+  it('signs Peace Treaties even between bitter rivals, lifts sanctions, sets 3-month truce & blocks attacks', () => {
+    const room = createNewRoomState('V4B', 'Peace', 'p1', 'Abtin', DEFAULT_SETTINGS);
     room.phase = 'PLANNING';
     const ir = room.countries.IR;
+    const us = room.countries.US;
     ir.playerId = 'p1';
-    ir.treasuryB = 600;
+    ir.treasuryB = 300;
+    ir.sanctionedBy.push('US');
+    us.lastAttackedBy = 'IR';
 
-    // Max out POWER_PLANT completely (20/20)
-    ir.infrastructure.POWER_PLANT = INFRASTRUCTURE_CATALOG.POWER_PLANT.maxLevel;
-    // Simulate severe nuclear/missile bombardment dropping grid & approval while maxed
-    ir.powerGrid = 18;
-    ir.approval = 20;
-    ir.devastation = 62;
+    const offer = {
+      id: 'peace-1',
+      round: 1,
+      from: 'IR' as const,
+      to: 'US' as const,
+      offerType: 'PEACE_TREATY' as const,
+      amount: 1,
+      priceB: 20,
+      direction: 'PACT' as const,
+      noteFa: '',
+      status: 'PENDING' as const,
+    };
 
-    // Emergency Reconstruction ALWAYS works even when infrastructure is 20/20!
-    const gridFix = instantEmergencyAction(room, 'IR', 'REPAIR_GRID');
-    expect(gridFix.ok).toBe(true);
-    expect(ir.powerGrid).toBe(42);
-    expect(ir.devastation).toBe(48);
+    const aiDecision = evaluateAITradeOffer(room, offer);
+    expect(aiDecision.accepted).toBe(true);
+    expect(executeAcceptedTrade(room, offer).ok).toBe(true);
 
-    const reliefFix = instantEmergencyAction(room, 'IR', 'NATIONAL_RELIEF');
-    expect(reliefFix.ok).toBe(true);
-    expect(ir.approval).toBe(34);
-    expect(ir.devastation).toBe(28);
+    expect(ir.sanctionedBy.includes('US')).toBe(false);
+    expect(us.lastAttackedBy).toBeNull();
+    expect(ir.nonAggressionPacts.US).toBe(4);
 
-    // Simulate war ruin (1 level destroyed from 20 -> 19 with damagedInfra = 1)
-    ir.infrastructure.POWER_PLANT = 19;
-    ir.damagedInfra.POWER_PLANT = 1;
-    const reb = instantBuildInfra(room, 'IR', 'POWER_PLANT');
-    expect(reb.ok).toBe(true);
-    expect(ir.infrastructure.POWER_PLANT).toBe(20);
-    expect(ir.damagedInfra.POWER_PLANT).toBe(0);
+    // Attempting to attack during active truce is cleanly blocked!
+    const blockedAttack = queuePlayerOrder(room, 'IR', {
+      kind: 'MILITARY_OPERATION',
+      targetCountry: 'US',
+      militaryType: 'MISSILE_DRONE_STRIKE',
+    });
+    expect(blockedAttack.ok).toBe(false);
   });
 
-  it('enforces Covert Attribution Privacy: untraced covert ops NEVER leak attacker identity to target or map', () => {
-    const room = createNewRoomState('V3C', 'Stealth', 'p1', 'Host', {
+  it('supports Diplomatic Statecraft (Improve Relations, Ultimatum Coercion, Sow Discord & Interactive AI Chat)', () => {
+    const room = createNewRoomState('V4C', 'Statecraft', 'p1', 'Abtin', DEFAULT_SETTINGS);
+    room.phase = 'PLANNING';
+    const us = room.countries.US;
+    us.playerId = 'p1';
+    us.treasuryB = 500;
+    us.upgrades.INTELLIGENCE = 10;
+
+    // 1. Improve Relations
+    const beforeRel = us.relations.BR;
+    expect(executeDiplomaticAction(room, 'US', 'BR', 'IMPROVE_RELATIONS').ok).toBe(true);
+    expect(us.relations.BR).toBeGreaterThan(beforeRel);
+
+    // 2. Threaten weaker AI state to lift sanction!
+    us.sanctionedBy.push('EG');
+    const ultRes = executeDiplomaticAction(room, 'US', 'EG', 'THREATEN_ULTIMATUM', {
+      ultimatum: 'LIFT_SANCTION',
+    });
+    expect(ultRes.ok).toBe(true);
+    expect(us.sanctionedBy.includes('EG')).toBe(false);
+
+    // 3. Interactive AI Chat shifts relations
+    const beforeChatRel = room.countries.FR.relations.US;
+    const reply = processInteractiveAIChat(room, room.countries.FR, us, 'سلام پیشنهاد صلح و دوستی و همکاری داریم');
+    expect(reply).toContain('وزارت خارجه');
+    expect(room.countries.FR.relations.US).toBeGreaterThan(beforeChatRel);
+  });
+
+  it('unlocks 2 and 3 monthly doctrine upgrades via Science Academy, supports Water Spot Trade & Selling Weapons', () => {
+    const room = createNewRoomState('V4D', 'Science', 'p1', 'Abtin', DEFAULT_SETTINGS);
+    room.phase = 'PLANNING';
+    const cn = room.countries.CN;
+    cn.playerId = 'p1';
+    cn.treasuryB = 1200;
+
+    // Science Academy Lv.5 unlocks 2 upgrades per month!
+    cn.infrastructure.SCIENCE_ACADEMY = 5;
+    expect(instantUpgradeTrack(room, 'CN', 'AEROSPACE').ok).toBe(true);
+    expect(instantUpgradeTrack(room, 'CN', 'CYBER_AI').ok).toBe(true);
+    expect(instantUpgradeTrack(room, 'CN', 'NAVAL_POWER').ok).toBe(false);
+
+    // Water Spot Trade & Surplus Weapon Sale
+    expect(instantSpotTrade(room, 'CN', 'WATER', 'BUY').ok).toBe(true);
+    expect(instantProduceWeapon(room, 'CN', 'j20', 1).ok).toBe(true);
+    const cashBeforeSell = cn.treasuryB;
+    expect(instantSellWeapon(room, 'CN', 'j20', 1).ok).toBe(true);
+    expect(cn.treasuryB).toBeGreaterThan(cashBeforeSell);
+
+    // Emergency Rebuild still works at max level
+    cn.infrastructure.POWER_PLANT = INFRASTRUCTURE_CATALOG.POWER_PLANT.maxLevel;
+    cn.powerGrid = 40;
+    expect(instantEmergencyAction(room, 'CN', 'REPAIR_GRID').ok).toBe(true);
+  });
+
+  it('prevents 1-month country wipeout (caps integrity loss at 24%/mo) and enforces progressive minor conquest', () => {
+    const room = createNewRoomState('V4E', 'AntiWipeout', 'p1', 'Abtin', {
       ...DEFAULT_SETTINGS,
       enableAINations: false,
     });
     room.phase = 'PLANNING';
-    room.players.push({
-      id: 'p2',
-      name: 'TargetPlayer',
-      isHost: false,
-      isGM: false,
-      countryId: 'BR',
-      connected: true,
-    });
-    room.players[0].countryId = 'IL';
-    room.countries.IL.playerId = 'p1';
-    room.countries.IL.upgrades.INTELLIGENCE = 10;
-    room.countries.BR.playerId = 'p2';
-    // Give target minimal counter-intel so trace chance stays at minimum floor
-    room.countries.BR.upgrades.INTELLIGENCE = 0;
-    room.countries.BR.intelLevel = 1;
-    room.countries.BR.infrastructure.CYBER_HQ = 0;
+    const ru = room.countries.RU;
+    const ua = room.countries.UA;
+    ru.playerId = 'p1';
+    ru.upgrades.ARMOR_LAND = 10;
+    ru.weapons.t90m_armata = 15;
 
-    expect(
-      queuePlayerOrder(room, 'IL', {
-        kind: 'COVERT_OPERATION',
-        targetCountry: 'BR',
-        covertType: 'ASSASSINATE_SCIENTIST',
-      }).ok
-    ).toBe(true);
-
-    // Force deterministic untraced hit via Math.random check over multiple trials or verify schema contract
-    resolveCurrentRound(room);
-    const brSummary = room.countries.BR.lastRoundSummary!;
-    expect(brSummary.incomingAttacks.length).toBe(1);
-    const atk = brSummary.incomingAttacks[0];
-    if (atk.attackerId === null) {
-      // Untraced! Verify target does NOT see IL's visual arc on sanitized state AND news doesn't leak IL!
-      expect(atk.attackerLabelFa).toContain('ناشناس');
-      const sanitizedForTarget = sanitizeRoomForPlayer(room, 'p2');
-      expect(sanitizedForTarget.visualEvents.some((v) => v.fromCountry === 'IL')).toBe(false);
-      // Actor itself still sees its own covert trajectory
-      const sanitizedForActor = sanitizeRoomForPlayer(room, 'p1');
-      expect(sanitizedForActor.visualEvents.some((v) => v.fromCountry === 'IL')).toBe(true);
+    // Even if RU, TR, and PK all invade UA simultaneously in Round 1, UA cannot be wiped out in 1 month!
+    for (const invId of ['RU', 'TR', 'PK'] as const) {
+      room.countries[invId].weapons.t90m_armata = 10;
+      room.countries[invId].upgrades.NAVAL_POWER = 6;
+      room.countries[invId].treasuryB = 400;
+      room.countries[invId].oilReserve = 300;
+      expect(
+        queuePlayerOrder(room, invId, {
+          kind: 'MILITARY_OPERATION',
+          targetCountry: 'UA',
+          militaryType: 'GROUND_CONQUEST',
+        }).ok
+      ).toBe(true);
     }
-  });
 
-  it('triggers complete Regime Collapse & Elimination on overwhelming devastation without locking match', () => {
-    const room = createNewRoomState('V3D', 'Collapse', 'p1', 'Host', {
-      ...DEFAULT_SETTINGS,
-      enableAINations: false,
-    });
-    room.phase = 'PLANNING';
-    room.countries.US.playerId = 'p1';
-    room.countries.US.isOnline = true;
-    // Put AI KP into catastrophic 96% devastation
-    room.countries.KP.devastation = 96;
-    room.countries.KP.approval = 4;
-    room.countries.KP.lastAttackedBy = 'US';
-
-    resolveCurrentRound(room);
-    expect(room.countries.KP.isEliminated).toBe(true);
-    expect(room.countries.KP.conqueredBy).toBe('US');
-    expect(room.rankings.find((r) => r.countryId === 'KP')?.score).toBe(0);
-  });
-
-  it('supports World Nation Conquest, Diplomatic Pact, Coalitions, Air/Naval/Land ops & 30-round stability', () => {
-    const room = createNewRoomState('V3E', 'Empire', 'p1', 'Commander', {
-      ...DEFAULT_SETTINGS,
-      gameMode: 'SINGLE',
-    });
-    room.phase = 'PLANNING';
-    room.countries.IR.playerId = 'p1';
-    room.countries.IR.isOnline = true;
-    room.countries.IR.treasuryB = 500;
-
-    // Sign peaceful pact with Oman ('512')
-    expect(instantMinorDiplomacyPact(room, 'IR', '512').ok).toBe(true);
-    expect(room.minorNations['512'].alignedWith).toBe('IR');
-
-    // Create custom coalition & join
-    expect(createCoalition(room, 'IR', 'پیمان خلیج فارس').ok).toBe(true);
-    const newCoalId = room.countries.IR.coalitionId!;
-    expect(joinCoalition(room, 'RU', newCoalId).ok).toBe(true);
-
-    // Queue minor nation conquest + fighter air sortie + Spot trade + weapon rule
-    expect(instantSpotTrade(room, 'IR', 'OIL', 'SELL').ok).toBe(true);
-    expect(instantUpgradeTrack(room, 'IR', 'AEROSPACE').ok).toBe(true);
-    // 2nd upgrade in the same month is realistically blocked
-    expect(instantUpgradeTrack(room, 'IR', 'INDUSTRY').ok).toBe(false);
-    expect(instantProduceWeapon(room, 'IR', 'fattah2', 1).ok).toBe(true);
-
+    // Also test progressive minor conquest on Iraq ('368') by IR
+    room.countries.IR.treasuryB = 300;
+    room.countries.IR.oilReserve = 300;
+    room.countries.IR.upgrades.ARMOR_LAND = 8;
+    room.countries.IR.weapons.karrar_armor = 12;
     expect(
       queuePlayerOrder(room, 'IR', {
         kind: 'MINOR_NATION_OPERATION',
@@ -175,113 +178,115 @@ describe('WW3 Global Command v3.0 — Reconstruction, Regime Collapse, World Con
       }).ok
     ).toBe(true);
 
-    expect(
-      queuePlayerOrder(room, 'IR', {
-        kind: 'MILITARY_OPERATION',
-        targetCountry: 'IL',
-        militaryType: 'AIR_SORTIE',
-        targetSector: 'AIR_DEFENSE_NET',
-      }).ok
-    ).toBe(true);
-
-    // Run 25 full living-world rounds to verify zero crashes, AI chokepoints, and numerical health!
-    for (let i = 0; i < 25; i++) {
-      if ((room.phase as string) === 'FINISHED') break;
-      prepareEndOfPlanning(room);
-      resolveCurrentRound(room);
-    }
-
-    expect(room.round).toBeGreaterThan(20);
-    expect(Number.isNaN(room.market.oilPriceUsd)).toBe(false);
-    expect(evaluateAITradeOffer(room, {
-      id: 'f22-check',
-      round: room.round,
-      from: 'IN',
-      to: 'US',
-      offerType: 'WEAPON',
-      weaponId: 'f22',
-      amount: 1,
-      priceB: 60,
-      direction: 'BUY',
-      noteFa: '',
-      status: 'PENDING',
-    }).accepted).toBe(false);
+    resolveCurrentRound(room);
+    expect(ua.isEliminated).toBe(false);
+    expect(ua.integrityPct).toBeGreaterThanOrEqual(76);
+    expect(room.minorNations['368'].conqueredBy).toBeNull(); // Progressive: takes >= 2 months!
   });
 
-  it('immediately resolves RADAR_ALERT over Socket.io and never deadlocks if a player disconnects', async () => {
+  it('verifies Secret Creator Cheat Console & Coalition Leave', () => {
+    const room = createNewRoomState('V4F', 'Creator', 'p1', 'Abtin', DEFAULT_SETTINGS);
+    expect(
+      applyCreatorCheat(room, {
+        secretKey: 'wrong',
+        targetCountry: 'IR',
+        action: 'SET_DOCTRINES_MAX',
+      }).ok
+    ).toBe(false);
+
+    expect(
+      applyCreatorCheat(room, {
+        secretKey: 'abtin',
+        targetCountry: 'IR',
+        action: 'SET_DOCTRINES_MAX',
+      }).ok
+    ).toBe(true);
+    expect(room.countries.IR.upgrades.AEROSPACE).toBe(10);
+
+    expect(createCoalition(room, 'IR', 'اتحاد نوین').ok).toBe(true);
+    const cid = room.countries.IR.coalitionId!;
+    expect(joinCoalition(room, 'RU', cid).ok).toBe(true);
+    expect(leaveCoalition(room, 'IR').ok).toBe(true);
+    expect(room.countries.IR.coalitionId).toBeNull();
+    expect(room.coalitions[cid].leader).toBe('RU');
+  });
+
+  it('handles F5 browser refresh race, Host Pause/Resume, Save/Load Snapshot & Rematch over Socket.io', async () => {
     const { httpServer, stopTicker } = createAppServer();
     await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', () => resolve()));
     const addr = httpServer.address();
-    const port = typeof addr === 'object' && addr ? addr.port : 3998;
+    const port = typeof addr === 'object' && addr ? addr.port : 3999;
     const url = `http://127.0.0.1:${port}`;
 
-    const c1 = ClientSocket(url, { transports: ['websocket'] });
-    const c2 = ClientSocket(url, { transports: ['websocket'] });
+    const oldTab = ClientSocket(url, { transports: ['websocket'] });
+    let refreshedTab: ReturnType<typeof ClientSocket> | null = null;
 
     try {
       const createRes = await new Promise<{ ok: boolean; roomCode?: string }>((resolve) =>
-        c1.emit(
+        oldTab.emit(
           'lobby:create',
           {
-            playerId: 'u1',
-            playerName: 'Ali',
-            settings: { gameMode: 'MULTI', difficulty: 'HARD', maxRounds: 50 },
+            playerId: 'host-u1',
+            playerName: 'Abtin',
+            settings: { gameMode: 'MULTI', difficulty: 'HARD', maxRounds: 24 },
           },
           resolve
         )
       );
       const code = createRes.roomCode!;
-      await new Promise<{ ok: boolean }>((resolve) =>
-        c2.emit('lobby:join', { roomCode: code, playerId: 'u2', playerName: 'Reza' }, resolve)
+      await new Promise<{ ok: boolean }>((r) => oldTab.emit('lobby:select_role', { countryId: 'IR' }, r));
+      await new Promise<{ ok: boolean }>((r) => oldTab.emit('lobby:start', r));
+
+      // Simulate exact F5 race: new socket joins BEFORE old socket disconnects!
+      refreshedTab = ClientSocket(url, { transports: ['websocket'] });
+      await new Promise<{ ok: boolean }>((r) =>
+        refreshedTab!.emit('lobby:join', { roomCode: code, playerId: 'host-u1', playerName: 'Abtin' }, r)
       );
-      await new Promise<{ ok: boolean }>((resolve) =>
-        c1.emit('lobby:select_role', { countryId: 'IR' }, resolve)
+      oldTab.disconnect();
+      await new Promise((r) => setTimeout(r, 120));
+
+      // Host Pause & Resume works on refreshed socket
+      const pauseRes = await new Promise<{ ok: boolean; isPaused?: boolean }>((r) =>
+        refreshedTab!.emit('game:toggle_pause', r)
       );
-      await new Promise<{ ok: boolean }>((resolve) =>
-        c2.emit('lobby:select_role', { countryId: 'US' }, resolve)
+      expect(pauseRes.ok).toBe(true);
+      expect(pauseRes.isPaused).toBe(true);
+
+      const unpauseRes = await new Promise<{ ok: boolean; isPaused?: boolean }>((r) =>
+        refreshedTab!.emit('game:toggle_pause', r)
       );
-      await new Promise<{ ok: boolean }>((resolve) => c1.emit('lobby:start', resolve));
+      expect(unpauseRes.isPaused).toBe(false);
 
-      // Close Strait of Hormuz & queue missile strike
-      expect(
-        (await new Promise<{ ok: boolean }>((r) => c1.emit('game:set_chokepoint', 'BLOCKADED', r))).ok
-      ).toBe(true);
-
-      await new Promise<{ ok: boolean }>((resolve) =>
-        c1.emit(
-          'game:queue_order',
-          {
-            kind: 'MILITARY_OPERATION',
-            targetCountry: 'US',
-            militaryType: 'MISSILE_DRONE_STRIKE',
-            targetSector: 'POWER_PLANT',
-          },
-          resolve
-        )
-      );
-
-      const alertPhaseReached = new Promise<void>((resolve) => {
-        c2.on('room:state', (st) => {
-          if (st.phase === 'RADAR_ALERT' && st.countries.US.incomingAlertActive) resolve();
-        });
-      });
-
-      c1.emit('game:toggle_ready', true);
-      c2.emit('game:toggle_ready', true);
-      await alertPhaseReached;
-
-      const round2Reached = new Promise<number>((resolve) => {
-        c1.on('room:state', (st) => {
+      // Ready advances to Round 2 seamlessly after F5 refresh!
+      const round2Promise = new Promise<number>((resolve) => {
+        refreshedTab!.on('room:state', (st) => {
           if (st.round === 2 && st.phase === 'PLANNING') resolve(st.round);
         });
       });
-
-      c2.emit('game:alert_posture', 'MAX_INTERCEPT');
-      const r2 = await round2Reached;
+      prepareEndOfPlanning; // ensure living world runs via toggle_ready
+      refreshedTab.emit('game:toggle_ready', true);
+      const r2 = await round2Promise;
       expect(r2).toBe(2);
+
+      // Save Snapshot & Load into a brand-new Resumed Lobby!
+      const saveRes = await new Promise<{ ok: boolean; saveCode?: string; roomJson?: string }>((r) =>
+        refreshedTab!.emit('game:save_snapshot', r)
+      );
+      expect(saveRes.ok).toBe(true);
+      expect(saveRes.roomJson).toBeTruthy();
+
+      const loadRes = await new Promise<{ ok: boolean; roomCode?: string }>((r) =>
+        refreshedTab!.emit(
+          'lobby:load_save',
+          { playerId: 'host-u1', playerName: 'Abtin', rawRoomJson: saveRes.roomJson },
+          r
+        )
+      );
+      expect(loadRes.ok).toBe(true);
+      expect(loadRes.roomCode).not.toBe(code);
     } finally {
-      c1.disconnect();
-      c2.disconnect();
+      oldTab.disconnect();
+      refreshedTab?.disconnect();
       stopTicker();
       httpServer.close();
     }

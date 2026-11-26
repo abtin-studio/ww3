@@ -9,21 +9,29 @@ import {
   ShieldCheck,
   Scale,
   ShoppingCart,
+  Flame,
+  AlertOctagon,
+  HeartHandshake,
+  Fuel,
 } from 'lucide-react';
 import {
   computeCountryMilitary,
   evaluateCovertOpDetails,
   evaluateMilitaryOpDetails,
+  getMaxCovertOrdersPerRound,
+  getMaxMilitaryOrdersPerRound,
 } from '../../shared/advisor';
-import { WEAPONS_CATALOG } from '../../shared/realWorldData';
+import { ALL_COUNTRY_IDS, WEAPONS_CATALOG } from '../../shared/realWorldData';
 import {
   CountryId,
   CovertOpType,
+  DiplomaticActionKind,
   GameRoomState,
   MilitaryOpType,
   ResolutionKind,
   StrikeTargetSector,
   TradeResourceKind,
+  UltimatumDemand,
 } from '../../shared/types';
 import { sound } from '../utils/sound';
 import { CountryFlag } from './CountryFlag';
@@ -51,6 +59,11 @@ interface TargetCountryDrawerProps {
     priceB: number;
     direction: 'SELL' | 'BUY' | 'PACT';
   }) => void;
+  onDiplomaticAction: (
+    targetCountry: CountryId,
+    kind: DiplomaticActionKind,
+    opts?: { ultimatum?: UltimatumDemand; thirdCountry?: CountryId }
+  ) => void;
   onToggleSanction: (targetId: CountryId) => void;
   onProposeResolution: (target: CountryId, kind: ResolutionKind) => void;
   onOpenDirectChat: (targetId: CountryId) => void;
@@ -64,6 +77,7 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
   onClose,
   onQueueOrder,
   onProposeTrade,
+  onDiplomaticAction,
   onToggleSanction,
   onProposeResolution,
   onOpenDirectChat,
@@ -71,6 +85,11 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
   const [tab, setTab] = useState<DrawerTab>(initialTab);
   const [sector, setSector] = useState<StrikeTargetSector>('MILITARY_BASES');
   const [covertFilter, setCovertFilter] = useState<'ALL' | 'SPY' | 'CYBER' | 'ASSASSINATE'>('ALL');
+  const [ultimatumDemand, setUltimatumDemand] = useState<UltimatumDemand>('STOP_ATTACKS');
+  const [discordThirdId, setDiscordThirdId] = useState<CountryId>(() => {
+    const fallback = ALL_COUNTRY_IDS.find((id) => id !== myCountryId && id !== targetId) || 'US';
+    return fallback;
+  });
 
   const target = room.countries[targetId];
   const me = myCountryId ? room.countries[myCountryId] : null;
@@ -81,11 +100,25 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
   const isAlly = Boolean(me?.allies.includes(target.id));
   const iSanctionThem = Boolean(me && target.sanctionedBy.includes(me.id));
   const intelSnapshot = me?.knownIntel[target.id];
+  const rel = me ? me.relations[target.id] ?? 0 : 0;
+  const truceUntil = me ? me.nonAggressionPacts[target.id] || 0 : 0;
+  const hasActiveTruce = truceUntil >= room.round;
+
+  const maxMilOps = me ? getMaxMilitaryOrdersPerRound(me) : 2;
+  const maxCovOps = me ? getMaxCovertOrdersPerRound(me) : 2;
 
   const targetIndigenousWeapons = Object.values(WEAPONS_CATALOG).filter(
     (w) => w.originCountry === target.id
   );
+  const myOwnedWeaponsToSell = me
+    ? Object.entries(me.weapons)
+        .filter(([, cnt]) => cnt > 0)
+        .map(([wId, cnt]) => ({ spec: WEAPONS_CATALOG[wId], cnt }))
+        .filter((x) => Boolean(x.spec))
+    : [];
+
   const fairOil60Price = Math.round(28 * (room.market.oilPriceUsd / 82));
+  const peaceOfferCost = rel >= 0 || target.devastation >= 35 ? 0 : 20;
 
   const covertCatalog: Array<{
     type: CovertOpType;
@@ -98,56 +131,56 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
       type: 'SAT_RECON',
       group: 'SPY',
       title: '📡 ۱. اشراف اطلاعاتی و ماهواره‌ای',
-      effect: 'افشای کامل خزانه، کلاهک‌ها و ویرانی + ۱۵٪ افزایش دقت حملات نظامی شما تا ۳ ماه آینده.',
+      effect: 'افشای کامل خزانه، کلاهک‌ها، غذا/آب و ویرانی + ۱۴٪ افزایش دقت حملات نظامی شما.',
       costB: 9,
     },
     {
       type: 'INSURGENCY_PSYOPS',
       group: 'SPY',
       title: '🔥 ۲. جنگ روانی و تحریک ناآرامی داخلی',
-      effect: 'کاهش ۱۴٪ رضایت مردم و افزایش ۱۲٪ شاخص بحران دولت هدف (سوق دادن رژیم دشمن به سقوط!).',
+      effect: 'کاهش ۱۴٪ رضایت مردم و افزایش ۱۱٪ شاخص بحران دولت هدف.',
       costB: 16,
     },
     {
       type: 'BLACKOUT_VIRUS',
       group: 'CYBER',
       title: '⚡ ۳. ویروس سایبری Blackout علیه رادار و برق',
-      effect: 'رادار هشدار سریع دشمن را کور می‌کند (آژیر دفاعی برایش فعال نمی‌شود!) + قطع ۲۶٪ برق سراسری.',
+      effect: 'رادار هشدار سریع دشمن را کور می‌کند (آژیر دفاعی فعال نمی‌شود!) + قطع ۲۶٪ برق سراسری.',
       costB: 16,
     },
     {
       type: 'TREASURY_HEIST',
       group: 'CYBER',
       title: '🏦 ۴. هک و سرقت سایبری بانک مرکزی',
-      effect: 'انتقال مستقیم $22B تا $42B از خزانه ارزی دشمن به خزانه کشور شما.',
+      effect: 'انتقال مستقیم $22B تا $40B از خزانه ارزی دشمن به خزانه کشور شما.',
       costB: 18,
     },
     {
       type: 'STUXNET_SABOTAGE',
       group: 'CYBER',
       title: '🧬 ۵. بدافزار صنعتی استاکس‌نت ۲',
-      effect: 'انفجار سایبری در سانتریفیوژها و کارخانه‌ها: -۲۵٪ برنامه هسته‌ای و تخریب ۱ زیرساخت صنعتی.',
+      effect: '-۲۵٪ برنامه هسته‌ای هدف و تخریب ۱ سطح کارخانه دفاعی یا راکتور.',
       costB: 22,
     },
     {
       type: 'ASSASSINATE_COMMANDER',
       group: 'ASSASSINATE',
       title: '🎖️ ۶. ترور فرمانده ارشد نیروهای مسلح',
-      effect: 'فلج کردن اتاق جنگ دشمن: -۲۵٪ توان فرماندهی، رهگیری و دفاع ارتش هدف در این ماه!',
+      effect: 'فلج کردن اتاق جنگ دشمن: -۲۵٪ توان فرماندهی و رهگیری هدف در این ماه!',
       costB: 24,
     },
     {
       type: 'ASSASSINATE_SCIENTIST',
       group: 'ASSASSINATE',
       title: '🔬 ۷. ترور دانشمندان هسته‌ای و هوافضا',
-      effect: 'عقب انداختن ۲۸٪ پروژه کلاهک هسته‌ای و کاهش سطح فناوری نظامی هدف.',
+      effect: 'عقب انداختن ۲۸٪ پروژه کلاهک هسته‌ای و کاهش سطح فناوری هدف.',
       costB: 22,
     },
     {
       type: 'ASSASSINATE_MINISTER',
       group: 'ASSASSINATE',
-      title: '🏛️ ۸. ترور مقامات ارشد سیاسی و امنیتی در پایتخت',
-      effect: 'شوک سنگین سیاسی به دولت هدف: -۱۶٪ رضایت مردم و +۱۶٪ بحران فروپاشی کابینه!',
+      title: '🏛️ ۸. ترور مقامات ارشد سیاسی در پایتخت',
+      effect: 'شوک سنگین به کابینه هدف: -۱۶٪ رضایت مردم و +۱۴٪ بحران دولت!',
       costB: 26,
     },
   ];
@@ -156,11 +189,61 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
     (c) => covertFilter === 'ALL' || c.group === covertFilter
   );
 
+  const militaryOpsList: Array<{
+    type: MilitaryOpType;
+    title: string;
+    effect: string;
+    costB: number;
+    nuclear?: boolean;
+  }> = [
+    ...(me && me.integrityPct < 100
+      ? [
+          {
+            type: 'LIBERATION_COUNTEROFFENSIVE' as MilitaryOpType,
+            title: `🛡️ پاتک بزرگ آزادسازی خاک میهن (${100 - me.integrityPct}٪ در اشغال)`,
+            effect: 'بازپس‌گیری تا ۲۶٪ از مناطق اشغالی کشور شما و افزایش ۱۰٪ روحیه ملی!',
+            costB: 24,
+          },
+        ]
+      : []),
+    {
+      type: 'AIR_SORTIE',
+      title: `✈️ ۱. عملیات جنگنده‌ها و بمباران هوایی (اسکادران شما: ${myMil?.fighterCount || 0})`,
+      effect: 'درگیری هوایی (رادارگریزی در برابر پدافند)، سرکوب ۳۲٪ رادار دشمن و بمباران زیرساخت انتخابی.',
+      costB: 18,
+    },
+    {
+      type: 'MISSILE_DRONE_STRIKE',
+      title: `🚀 ۲. حمله ترکیبی موشکی و امواج پهپادی (موشک/پهپاد شما: ${(myMil?.missileCount || 0) + (myMil?.droneCount || 0)})`,
+      effect: 'عبور موشک‌های هایپرسونیک و پهپادها از پدافند و انهدام مستقیم ۱ سطح زیرساخت هدف.',
+      costB: 20,
+    },
+    {
+      type: 'NAVAL_BLOCKADE_STRIKE',
+      title: `⚓ ۳. عملیات ناوگان دریایی و محاصره بنادر (ناوگان شما: ${myMil?.navalCount || 0})`,
+      effect: 'شکار ناوگان دریایی دشمن، توقیف نفتکش‌ها و کاهش ۴۰٪ درآمد دریابرد هدف.',
+      costB: 22,
+    },
+    {
+      type: 'GROUND_CONQUEST',
+      title: `🚜 ۴. تهاجم زرهی و پیشروی مرزی (خاک باقی‌مانده هدف: ${target.integrityPct}٪)`,
+      effect: 'تصرف مرحله‌ای خاک دشمن (حداکثر ۲۴٪ در ماه) + غنیمت خزانه و نفت تا تسخیر کامل کشور در طول چند ماه!',
+      costB: 34,
+    },
+    {
+      type: 'NUCLEAR_STRIKE',
+      title: `☢️ ۵. شلیک کلاهک استراتژیک هسته‌ای (موجودی: ${me?.warheads || 0})`,
+      effect: 'انهدام سنگین زیرساخت‌ها و وضعیت DEFCON 1، همراه با تحریم جهانی مهاجم!',
+      costB: 45,
+      nuclear: true,
+    },
+  ];
+
   return (
     <div className="fixed inset-0 z-40 bg-black/75 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <div className="w-full sm:max-w-2xl max-h-[92vh] bg-[#0a1222] border-t sm:border border-slate-700 rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col overflow-hidden">
+      <div className="w-full sm:max-w-2xl max-h-[92vh] glass-panel rounded-t-3xl sm:rounded-3xl flex flex-col overflow-hidden animate-panel-in">
         {/* Header */}
-        <div className="p-4 sm:p-5 bg-[#070d19] border-b border-slate-800 flex items-start justify-between gap-3">
+        <div className="p-4 sm:p-5 bg-[#060c18]/90 border-b border-slate-800 flex items-start justify-between gap-3">
           <div className="flex items-center gap-3">
             <CountryFlag countryId={target.id} size="lg" />
             <div>
@@ -176,7 +259,7 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
                   </span>
                 ) : (
                   <span className="px-2 py-0.5 rounded-md bg-indigo-500/15 border border-indigo-500/40 text-indigo-300 text-[11px] font-bold">
-                    🤖 هوش مصنوعی فعال
+                    🤖 هوش مصنوعی ({target.archetypeTagFa})
                   </span>
                 )}
                 {isAlly && (
@@ -184,10 +267,26 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
                     🤝 متحد رسمی
                   </span>
                 )}
+                {hasActiveTruce && (
+                  <span className="px-2 py-0.5 rounded-md bg-cyan-500/20 border border-cyan-500/40 text-cyan-200 text-[11px] font-bold">
+                    🕊️ آتش‌بس تا ماه {truceUntil}
+                  </span>
+                )}
               </div>
-              <p className="text-xs text-slate-400 mt-0.5">
-                {target.capitalFa} • اطلاعات: {target.agencyCode} • خاک: {target.integrityPct}٪ • ویرانی: {target.devastation}٪ • رهگیری: {targetMil.interceptRate}٪
-              </p>
+              <div className="text-xs text-slate-400 mt-1 flex flex-wrap items-center gap-x-2">
+                <span>{target.capitalFa}</span>
+                <span>• خاک: {target.integrityPct}٪</span>
+                <span>• ویرانی: {target.devastation}٪</span>
+                {me && (
+                  <span
+                    className={`font-bold ${
+                      rel >= 25 ? 'text-emerald-300' : rel <= -25 ? 'text-rose-400' : 'text-amber-300'
+                    }`}
+                  >
+                    • رابطه سیاسی: {rel > 0 ? `+${rel}` : rel}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
 
@@ -196,13 +295,14 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
               <button
                 type="button"
                 onClick={() => {
+                  sound.playClick();
                   onOpenDirectChat(target.id);
                   onClose();
                 }}
                 className="px-3 py-2 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/40 text-cyan-300 text-xs font-bold flex items-center gap-1.5"
               >
                 <MessageSquare className="w-4 h-4" />
-                چت مستقیم
+                مذاکره در چت
               </button>
             )}
             <button
@@ -217,34 +317,13 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
 
         {/* 3 Action Tabs */}
         {me && !me.isEliminated && !target.isEliminated && (
-          <div className="grid grid-cols-3 border-b border-slate-800 bg-[#070d19] text-xs sm:text-sm font-black">
+          <div className="grid grid-cols-3 border-b border-slate-800 bg-[#060c18] text-xs sm:text-sm font-black">
             <button
               type="button"
-              onClick={() => setTab('WAR')}
-              className={`py-3 flex items-center justify-center gap-1.5 transition ${
-                tab === 'WAR'
-                  ? 'text-rose-400 border-b-2 border-rose-400 bg-rose-500/10'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Swords className="w-4 h-4" />
-              هوایی، دریایی و زمینی
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab('COVERT')}
-              className={`py-3 flex items-center justify-center gap-1.5 transition ${
-                tab === 'COVERT'
-                  ? 'text-purple-300 border-b-2 border-purple-400 bg-purple-500/10'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Eye className="w-4 h-4" />
-              جاسوسی، هک و ترور
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab('DIPLOMACY')}
+              onClick={() => {
+                sound.playClick();
+                setTab('DIPLOMACY');
+              }}
               className={`py-3 flex items-center justify-center gap-1.5 transition ${
                 tab === 'DIPLOMACY'
                   ? 'text-emerald-300 border-b-2 border-emerald-400 bg-emerald-500/10'
@@ -252,7 +331,37 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
               }`}
             >
               <Handshake className="w-4 h-4" />
-              تجارت، اتحاد و کمیته
+              صلح، تهدید و تجارت
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                sound.playClick();
+                setTab('WAR');
+              }}
+              className={`py-3 flex items-center justify-center gap-1.5 transition ${
+                tab === 'WAR'
+                  ? 'text-rose-400 border-b-2 border-rose-400 bg-rose-500/10'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Swords className="w-4 h-4" />
+              جنگ ({me.militaryOrdersUsedThisRound}/{maxMilOps})
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                sound.playClick();
+                setTab('COVERT');
+              }}
+              className={`py-3 flex items-center justify-center gap-1.5 transition ${
+                tab === 'COVERT'
+                  ? 'text-purple-300 border-b-2 border-purple-400 bg-purple-500/10'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Eye className="w-4 h-4" />
+              هک و ترور ({me.covertOrdersUsedThisRound}/{maxCovOps})
             </button>
           </div>
         )}
@@ -267,32 +376,24 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
             <div className="text-sm text-slate-300 text-center py-6">نمای نظارتی اتاق جنگ</div>
           ) : tab === 'WAR' ? (
             <div className="space-y-3.5">
-              {/* Domain Force Comparison */}
-              <div className="p-3.5 rounded-2xl bg-[#0d172a] border border-slate-800 space-y-2 text-xs">
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <span className="font-bold text-emerald-300">
-                    شما — ✈️ {myMil.airPower} • ⚓ {myMil.navalPower} • 🚜 {myMil.groundPower}
-                  </span>
-                  <span className="font-bold text-rose-300">
-                    {target.nameFa} — 🛡️ دفاع {targetMil.defenseScore} (رهگیری {targetMil.interceptRate}٪)
-                  </span>
-                </div>
-                <div className="w-full h-2 rounded-full bg-rose-500/30 overflow-hidden flex">
-                  <div
-                    className="h-full bg-emerald-400 transition-all"
-                    style={{
-                      width: `${Math.round(
-                        (myMil.attackScore / Math.max(1, myMil.attackScore + targetMil.defenseScore)) * 100
-                      )}%`,
-                    }}
-                  />
-                </div>
+              {/* Quota & Truce Status */}
+              <div className="p-3 rounded-2xl glass-card flex items-center justify-between flex-wrap gap-2 text-xs">
+                <span className="font-bold text-slate-200">
+                  ⚔️ سهمیه عملیات نظامی این ماه: <span className="text-rose-300 font-mono">{me.militaryOrdersUsedThisRound} از {maxMilOps}</span>
+                </span>
+                <span className="text-amber-300 font-mono">🛢️ ذخیره سوخت شما: {me.oilReserve} واحد</span>
               </div>
 
+              {hasActiveTruce && (
+                <div className="p-3 rounded-2xl bg-cyan-500/15 border border-cyan-400/40 text-xs text-cyan-200 font-bold">
+                  🕊️ پیمان صلح و آتش‌بس رسمی میان کشور شما و {target.nameFa} تا پایان ماه {truceUntil} برقرار است.
+                </div>
+              )}
+
               {/* Target Sector Picker */}
-              <div className="p-3 rounded-2xl bg-[#0d172a] border border-slate-800 space-y-2">
+              <div className="p-3 rounded-2xl glass-card space-y-2">
                 <span className="text-xs font-bold text-slate-300 block">
-                  🎯 هدف بمباران هوایی / موشکی را انتخاب کنید:
+                  🎯 هدف بمباران هوایی / موشکی را مشخص کنید:
                 </span>
                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5 text-[11px]">
                   {(
@@ -307,11 +408,14 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
                     <button
                       key={sec}
                       type="button"
-                      onClick={() => setSector(sec)}
+                      onClick={() => {
+                        sound.playClick();
+                        setSector(sec);
+                      }}
                       className={`py-2 px-2 rounded-xl border font-bold transition ${
                         sector === sec
                           ? 'bg-rose-500/25 border-rose-400 text-white'
-                          : 'bg-[#070d18] border-slate-800 text-slate-400'
+                          : 'bg-[#060c18] border-slate-800 text-slate-400'
                       }`}
                     >
                       {lbl}
@@ -320,88 +424,66 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
                 </div>
               </div>
 
-              {/* 5 Domain Military Operations (Air, Missile/Drone, Naval, Land Conquest, Nuclear) */}
-              {(
-                [
-                  {
-                    type: 'AIR_SORTIE' as MilitaryOpType,
-                    title: `✈️ ۱. عملیات جنگنده‌ها و بمباران هوایی (اسکادران شما: ${myMil.fighterCount})`,
-                    effect:
-                      'اعزام جنگنده‌ها و بمب‌افکن‌ها برای درگیری هوایی، سرکوب ۳۲٪ پدافند دشمن و بمباران زیرساخت انتخابی.',
-                    costB: 18,
-                    nuclear: false,
-                  },
-                  {
-                    type: 'MISSILE_DRONE_STRIKE' as MilitaryOpType,
-                    title: '🚀 ۲. حمله ترکیبی موشکی و امواج پهپادی',
-                    effect: 'اشباع رادار دشمن و تخریب مستقیم ۱ سطح از زیرساخت هدف انتخاب‌شده (قابل بازسازی توسط مدافع).',
-                    costB: 20,
-                    nuclear: false,
-                  },
-                  {
-                    type: 'NAVAL_BLOCKADE_STRIKE' as MilitaryOpType,
-                    title: `⚓ ۳. عملیات دریایی و محاصره بنادر (ناوگان شما: ${myMil.navalCount})`,
-                    effect: 'انهدام ناوگان دریایی دشمن، توقیف نفتکش‌ها و کاهش ۳۸٪ درآمد صادرات دریابرد هدف در این ماه.',
-                    costB: 22,
-                    nuclear: false,
-                  },
-                  {
-                    type: 'GROUND_CONQUEST' as MilitaryOpType,
-                    title: `🚜 ۴. تهاجم زمینی و کشورگشایی (باقی‌مانده خاک هدف: ${target.integrityPct}٪)`,
-                    effect:
-                      'پیشروی لشکرهای زرهی برای تصرف ۲۸٪ تا ۳۸٪ خاک دشمن + غنیمت خزانه و نفت! (رسیدن خاک به ۰٪ = فتح کامل کشور!)',
-                    costB: 34,
-                    nuclear: false,
-                  },
-                  {
-                    type: 'NUCLEAR_STRIKE' as MilitaryOpType,
-                    title: `☢️ ۵. شلیک کلاهک استراتژیک هسته‌ای (موجودی: ${me.warheads})`,
-                    effect: 'تخریب ۳ مجتمع زیرساختی و +۴۲٪ بحران ویرانی در هدف، اما وضعیت DEFCON 1 و تحریم جهانی!',
-                    costB: 45,
-                    nuclear: true,
-                  },
-                ] as const
-              ).map((op) => {
-                const details = evaluateMilitaryOpDetails(me, target, op.type, room.round);
+              {/* Domain Military Operations */}
+              {militaryOpsList.map((op) => {
+                const details = evaluateMilitaryOpDetails(me, target, op.type, room.round, room.minorNations);
+                const quotaFull = me.militaryOrdersUsedThisRound >= maxMilOps;
+                const blockedByTruce = hasActiveTruce && op.type !== 'LIBERATION_COUNTEROFFENSIVE';
+                const disabled = !details.canExecute || quotaFull || blockedByTruce;
+
                 return (
                   <div
                     key={op.type}
                     className={`p-3.5 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
                       op.nuclear
                         ? 'bg-rose-950/35 border-rose-500/50'
-                        : 'bg-[#0d172a] border-slate-800'
+                        : op.type === 'LIBERATION_COUNTEROFFENSIVE'
+                        ? 'bg-emerald-950/30 border-emerald-500/50'
+                        : 'glass-card'
                     }`}
                   >
                     <div className="space-y-1.5">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-black text-xs sm:text-sm text-white">{op.title}</span>
-                        <span
-                          className={`px-2 py-0.5 rounded-md font-mono text-[11px] font-bold ${
-                            details.winPct >= 65
-                              ? 'bg-emerald-500/20 text-emerald-300'
-                              : details.winPct >= 42
-                              ? 'bg-amber-500/20 text-amber-300'
-                              : 'bg-rose-500/20 text-rose-300'
-                          }`}
-                        >
-                          شانس موفقیت این دور: {details.winPct}٪
+                        {details.canExecute && (
+                          <span
+                            className={`px-2 py-0.5 rounded-md font-mono text-[11px] font-bold ${
+                              details.winPct >= 65
+                                ? 'bg-emerald-500/20 text-emerald-300'
+                                : details.winPct >= 42
+                                ? 'bg-amber-500/20 text-amber-300'
+                                : 'bg-rose-500/20 text-rose-300'
+                            }`}
+                          >
+                            شانس موفقیت: {details.winPct}٪
+                          </span>
+                        )}
+                        <span className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-300 font-mono text-[10px] flex items-center gap-1">
+                          <Fuel className="w-3 h-3" /> {details.fuelCost} سوخت
                         </span>
                       </div>
                       <p className="text-xs text-slate-300 leading-relaxed">{op.effect}</p>
-                      <div className="flex flex-wrap gap-1.5 pt-0.5">
-                        {details.factorsFa.map((f, idx) => (
-                          <span
-                            key={idx}
-                            className="px-2 py-0.5 rounded bg-[#070d19] border border-slate-800 text-[10px] text-cyan-300"
-                          >
-                            {f}
-                          </span>
-                        ))}
-                      </div>
+                      {details.requirementErrorFa ? (
+                        <div className="text-[11px] font-bold text-amber-300 bg-amber-500/10 border border-amber-500/30 px-2.5 py-1 rounded-lg">
+                          ⚠️ {details.requirementErrorFa}
+                        </div>
+                      ) : (
+                        <div className="flex flex-wrap gap-1.5 pt-0.5">
+                          {details.factorsFa.map((f, idx) => (
+                            <span
+                              key={idx}
+                              className="px-2 py-0.5 rounded bg-[#060c18] border border-slate-800 text-[10px] text-cyan-300"
+                            >
+                              {f}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
 
                     <button
                       type="button"
+                      disabled={disabled}
                       onClick={() => {
                         sound.playOrderConfirm();
                         onQueueOrder({
@@ -411,13 +493,15 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
                           targetSector: sector,
                         });
                       }}
-                      className={`px-4 py-2.5 rounded-xl font-black text-xs shrink-0 ${
+                      className={`px-4 py-2.5 rounded-xl font-black text-xs shrink-0 disabled:opacity-40 ${
                         op.nuclear
                           ? 'bg-rose-600 hover:bg-rose-500 text-white'
+                          : op.type === 'LIBERATION_COUNTEROFFENSIVE'
+                          ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
                           : 'bg-rose-500 hover:bg-rose-400 text-slate-950'
                       }`}
                     >
-                      ثبت حمله (${op.costB}B)
+                      {quotaFull ? 'تکمیل سهمیه ماه' : `ثبت فرمان ($${op.costB}B)`}
                     </button>
                   </div>
                 );
@@ -425,38 +509,38 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
             </div>
           ) : tab === 'COVERT' ? (
             <div className="space-y-3">
-              {/* Intel Status Banner */}
-              <div className="p-3 rounded-2xl bg-[#0d172a] border border-slate-800 text-xs">
-                {intelSnapshot ? (
+              {/* Intel Status & Quota Banner */}
+              <div className="p-3 rounded-2xl glass-card flex items-center justify-between flex-wrap gap-2 text-xs">
+                <span className="font-bold text-purple-200">
+                  🕵️ سهمیه عملیات مخفی این ماه: <span className="font-mono text-white">{me.covertOrdersUsedThisRound} از {maxCovOps}</span> (حداکثر ۱ ترور در ماه)
+                </span>
+                {intelSnapshot && (
                   <span className="text-emerald-300 font-bold">
-                    🔓 پرونده سرّی باز است (ماه {intelSnapshot.round}): خزانه ${intelSnapshot.treasuryB}B • کلاهک{' '}
-                    {intelSnapshot.warheads} • ویرانی {intelSnapshot.devastation}٪ (+دقت حمله فعال!)
-                  </span>
-                ) : (
-                  <span className="text-slate-300">
-                    🕵️ اگر کشور هدف سامانه ردیابی سایبری/ضدجاسوسی قوی نداشته باشد، نام کشور شما در حملات مخفی و ترورها کاملاً ناشناس می‌ماند!
+                    🔓 خزانه هدف: ${intelSnapshot.treasuryB}B • کلاهک: {intelSnapshot.warheads} • غذا: {intelSnapshot.foodReserve}
                   </span>
                 )}
               </div>
 
-              {/* Sub-filter Pills */}
               <div className="grid grid-cols-4 gap-1.5 text-[11px] font-bold">
                 {(
                   [
                     ['ALL', 'همه (۸)'],
-                    ['SPY', '📡 جاسوسی و شورش'],
-                    ['CYBER', '💻 هک و سایبری'],
-                    ['ASSASSINATE', '🎯 ترورهای هدفمند'],
+                    ['SPY', '📡 جاسوسی'],
+                    ['CYBER', '💻 هک سایبری'],
+                    ['ASSASSINATE', '🎯 ترور هدفمند'],
                   ] as const
                 ).map(([flt, lbl]) => (
                   <button
                     key={flt}
                     type="button"
-                    onClick={() => setCovertFilter(flt)}
+                    onClick={() => {
+                      sound.playClick();
+                      setCovertFilter(flt);
+                    }}
                     className={`py-2 rounded-xl border ${
                       covertFilter === flt
                         ? 'bg-purple-500 text-slate-950 border-purple-400 font-black'
-                        : 'bg-[#070d18] text-slate-300 border-slate-800'
+                        : 'bg-[#060c18] text-slate-300 border-slate-800'
                     }`}
                   >
                     {lbl}
@@ -466,10 +550,14 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
 
               {visibleCovertOps.map((cov) => {
                 const details = evaluateCovertOpDetails(me, target, cov.type);
+                const quotaFull =
+                  me.covertOrdersUsedThisRound >= maxCovOps ||
+                  (cov.group === 'ASSASSINATE' && me.assassinationsUsedThisRound >= 1);
+
                 return (
                   <div
                     key={cov.type}
-                    className="p-3.5 rounded-2xl bg-[#0d172a] border border-purple-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                    className="p-3.5 rounded-2xl glass-card border-purple-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                   >
                     <div className="space-y-1.5">
                       <div className="flex items-center gap-2 flex-wrap">
@@ -485,7 +573,7 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
                                 : 'bg-amber-500/20 text-amber-300'
                             }`}
                           >
-                            ریسک ردیابی هویت: {details.tracePct}٪
+                            ریسک لو رفتن هویت: {details.tracePct}٪
                           </span>
                         )}
                       </div>
@@ -493,6 +581,7 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
                     </div>
                     <button
                       type="button"
+                      disabled={quotaFull}
                       onClick={() => {
                         sound.playOrderConfirm();
                         onQueueOrder({
@@ -501,61 +590,208 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
                           covertType: cov.type,
                         });
                       }}
-                      className="px-4 py-2.5 rounded-xl bg-purple-500 hover:bg-purple-400 text-slate-950 font-black text-xs shrink-0"
+                      className="px-4 py-2.5 rounded-xl bg-purple-500 hover:bg-purple-400 text-slate-950 font-black text-xs shrink-0 disabled:opacity-40"
                     >
-                      اجرا (${cov.costB}B)
+                      {quotaFull ? 'تکمیل سهمیه' : `اجرا ($${cov.costB}B)`}
                     </button>
                   </div>
                 );
               })}
             </div>
           ) : (
+            /* DIPLOMACY, PEACE TREATY, THREATEN, SOW DISCORD & ARMS BUY/SELL (ITEMS #7, #17, #22!) */
             <div className="space-y-4">
-              {/* 1-Click Fast Oil Deals */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+              {/* 1. PEACE TREATY & ALLIANCE & FRIENDSHIP */}
+              <div className="glass-card border-emerald-500/35 rounded-2xl p-3.5 space-y-3">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <span className="text-xs sm:text-sm font-black text-emerald-300 flex items-center gap-1.5">
+                    <HeartHandshake className="w-4 h-4" />
+                    معاهده صلح، دوستی و اتحاد رسمی (رابطه فعلی: {rel > 0 ? `+${rel}` : rel})
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                  <button
+                    type="button"
+                    disabled={hasActiveTruce}
+                    onClick={() => {
+                      sound.playDiplomacy();
+                      onProposeTrade({
+                        to: target.id,
+                        offerType: 'PEACE_TREATY',
+                        amount: 1,
+                        priceB: peaceOfferCost,
+                        direction: 'PACT',
+                      });
+                    }}
+                    className="p-3 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/50 text-emerald-200 font-black text-right disabled:opacity-45"
+                  >
+                    <div>🕊️ امضای پیمان صلح و آتش‌بس</div>
+                    <div className="text-[10px] font-normal text-slate-300 mt-0.5">
+                      {hasActiveTruce
+                        ? `آتش‌بس تا ماه ${truceUntil} فعال است ✓`
+                        : `پایان جنگ، لغو تحریم و ۳ ماه عدم تعرض (${peaceOfferCost === 0 ? 'رایگان' : `$${peaceOfferCost}B`})`}
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      sound.playDiplomacy();
+                      onDiplomaticAction(target.id, 'IMPROVE_RELATIONS');
+                    }}
+                    className="p-3 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/40 text-cyan-200 font-black text-right"
+                  >
+                    <div>🤝 اعزام هیئت دوستی ($14B)</div>
+                    <div className="text-[10px] font-normal text-slate-300 mt-0.5">
+                      افزایش فوری +۲۰ واحد رابطه سیاسی برای آماده‌سازی اتحاد
+                    </div>
+                  </button>
+
+                  {!isAlly ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        sound.playDiplomacy();
+                        onProposeTrade({
+                          to: target.id,
+                          offerType: 'ALLIANCE',
+                          amount: 1,
+                          priceB: rel >= 55 ? 12 : 26,
+                          direction: 'PACT',
+                        });
+                      }}
+                      className="p-3 rounded-xl bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-400/50 text-indigo-200 font-black text-right"
+                    >
+                      <div className="flex items-center gap-1">
+                        <ShieldCheck className="w-3.5 h-3.5" /> اتحاد نظامی (${rel >= 55 ? 12 : 26}B)
+                      </div>
+                      <div className="text-[10px] font-normal text-slate-300 mt-0.5">
+                        نیازمند رابطه بالای +۲۰؛ باز شدن ساخت تسلیحات متحد!
+                      </div>
+                    </button>
+                  ) : (
+                    <div className="p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/35 text-emerald-300 font-black flex items-center justify-center">
+                      🤝 متحد نظامی رسمی ✓
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* 2. THREATEN / ULTIMATUM & SOW DISCORD (ITEM #17!) */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div className="glass-card border-amber-500/35 rounded-2xl p-3.5 space-y-2.5">
+                  <div className="font-black text-amber-300 flex items-center gap-1.5">
+                    <AlertOctagon className="w-4 h-4" />
+                    تهدید رسمی و صدور اولتیماتوم ($8B)
+                  </div>
+                  <select
+                    value={ultimatumDemand}
+                    onChange={(e) => setUltimatumDemand(e.target.value as UltimatumDemand)}
+                    className="w-full px-2.5 py-2 rounded-xl bg-[#050a14] border border-slate-700 text-white text-xs"
+                  >
+                    <option value="STOP_ATTACKS">شرط: توقف فوری حملات و عقب‌نشینی</option>
+                    <option value="LIFT_SANCTION">شرط: لغو فوری تحریم‌ها علیه کشور ما</option>
+                    <option value="OPEN_CHOKEPOINT">شرط: بازگشایی تنگه دریایی مسدودشده</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      sound.playOrderConfirm();
+                      onDiplomaticAction(target.id, 'THREATEN_ULTIMATUM', { ultimatum: ultimatumDemand });
+                    }}
+                    className="w-full py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black"
+                  >
+                    ⚠️ ارسال اولتیماتوم نظامی ($8B)
+                  </button>
+                </div>
+
+                <div className="glass-card border-rose-500/35 rounded-2xl p-3.5 space-y-2.5">
+                  <div className="font-black text-rose-300 flex items-center gap-1.5">
+                    <Flame className="w-4 h-4" />
+                    کاشتن بذر نفرت علیه کشور سوم ($18B)
+                  </div>
+                  <select
+                    value={discordThirdId}
+                    onChange={(e) => setDiscordThirdId(e.target.value as CountryId)}
+                    className="w-full px-2.5 py-2 rounded-xl bg-[#050a14] border border-slate-700 text-white text-xs"
+                  >
+                    {ALL_COUNTRY_IDS.filter(
+                      (cid) => cid !== me.id && cid !== target.id && !room.countries[cid]?.isEliminated
+                    ).map((cid) => (
+                      <option key={cid} value={cid}>
+                        تخریب رابطه با: {room.countries[cid].nameFa}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      sound.playOrderConfirm();
+                      onDiplomaticAction(target.id, 'SOW_DISCORD', { thirdCountry: discordThirdId });
+                    }}
+                    className="w-full py-2 rounded-xl bg-rose-500 hover:bg-rose-400 text-slate-950 font-black"
+                  >
+                    🐍 اجرای عملیات تفرقه‌افکنی ($18B)
+                  </button>
+                </div>
+              </div>
+
+              {/* 3. Resource & Sanction Deals */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
                 <button
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
+                    sound.playOrderConfirm();
                     onProposeTrade({
                       to: target.id,
                       offerType: 'OIL',
                       amount: 60,
                       priceB: fairOil60Price,
                       direction: 'SELL',
-                    })
-                  }
-                  className="p-3.5 rounded-2xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-200 font-black text-right"
+                    });
+                  }}
+                  className="p-3 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-200 font-bold text-right"
                 >
-                  <div>🛢️ فروش فوری ۶۰ نفت به {target.nameFa}</div>
-                  <div className="text-[11px] font-normal text-slate-300 mt-0.5">
-                    دریافت نقدی +${fairOil60Price}B
-                  </div>
+                  🛢️ صادرات ۶۰ نفت (+${fairOil60Price}B)
                 </button>
-
                 <button
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
+                    sound.playOrderConfirm();
                     onProposeTrade({
                       to: target.id,
-                      offerType: 'OIL',
+                      offerType: 'FOOD',
                       amount: 60,
-                      priceB: fairOil60Price,
+                      priceB: 19,
                       direction: 'BUY',
-                    })
-                  }
-                  className="p-3.5 rounded-2xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/40 text-cyan-200 font-black text-right"
+                    });
+                  }}
+                  className="p-3 rounded-xl bg-lime-500/15 hover:bg-lime-500/25 border border-lime-500/40 text-lime-200 font-bold text-right"
                 >
-                  <div>🛒 خرید فوری ۶۰ نفت از {target.nameFa}</div>
-                  <div className="text-[11px] font-normal text-slate-300 mt-0.5">
-                    پرداخت ${fairOil60Price}B
-                  </div>
+                  🌾 واردات ۶۰ غلات ($19B)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    sound.playClick();
+                    onToggleSanction(target.id);
+                  }}
+                  className={`p-3 rounded-xl border font-bold flex items-center justify-center gap-1.5 ${
+                    iSanctionThem
+                      ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                      : 'bg-rose-500/15 border-rose-500/40 text-rose-300'
+                  }`}
+                >
+                  <Ban className="w-4 h-4" />
+                  {iSanctionThem ? 'لغو تحریم اقتصادی' : 'وضع تحریم اقتصادی'}
                 </button>
               </div>
 
-              {/* Buy Indigenous Weapons */}
+              {/* 4. Buy Target's Indigenous Weapons OR Sell Your Surplus Weapons */}
               {targetIndigenousWeapons.length > 0 && (
-                <div className="bg-[#0d172a] border border-slate-800 rounded-2xl p-3.5 space-y-2.5">
-                  <div className="font-black text-sm text-amber-300 flex items-center gap-1.5">
+                <div className="glass-card rounded-2xl p-3.5 space-y-2">
+                  <div className="font-black text-xs sm:text-sm text-amber-300 flex items-center gap-1.5">
                     <ShoppingCart className="w-4 h-4" />
                     خرید مستقیم تسلیحات ساخت {target.nameFa}
                   </div>
@@ -565,17 +801,16 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
                       return (
                         <div
                           key={w.id}
-                          className="p-2.5 rounded-xl bg-[#070d18] border border-slate-800 flex items-center justify-between gap-2"
+                          className="p-2.5 rounded-xl bg-[#060c18] border border-slate-800 flex items-center justify-between gap-2"
                         >
                           <div>
                             <div className="text-xs font-bold text-white">{w.nameFa}</div>
-                            <div className="text-[10px] text-slate-400">
-                              حمله {w.attackPower} • دفاع {w.defensePower}
-                            </div>
+                            <div className="text-[10px] text-indigo-300">{w.roleTagFa}</div>
                           </div>
                           <button
                             type="button"
-                            onClick={() =>
+                            onClick={() => {
+                              sound.playOrderConfirm();
                               onProposeTrade({
                                 to: target.id,
                                 offerType: 'WEAPON',
@@ -583,8 +818,8 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
                                 amount: 1,
                                 priceB: exportPrice,
                                 direction: 'BUY',
-                              })
-                            }
+                              });
+                            }}
                             className="px-2.5 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs shrink-0"
                           >
                             خرید (${exportPrice}B)
@@ -596,46 +831,54 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
                 </div>
               )}
 
-              {/* Bilateral Alliance & Sanctions */}
-              <div className="grid grid-cols-2 gap-2.5 text-xs">
-                {!isAlly && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onProposeTrade({
-                        to: target.id,
-                        offerType: 'ALLIANCE',
-                        amount: 1,
-                        priceB: 28,
-                        direction: 'PACT',
-                      })
-                    }
-                    className="p-3 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/40 text-cyan-200 font-bold flex items-center justify-center gap-1.5"
-                  >
-                    <ShieldCheck className="w-4 h-4" />
-                    پیمان دفاعی مشترک ($28B)
-                  </button>
-                )}
+              {myOwnedWeaponsToSell.length > 0 && (
+                <div className="glass-card rounded-2xl p-3.5 space-y-2">
+                  <div className="font-black text-xs text-emerald-300">
+                    💰 پیشنهاد صادرات و فروش تسلیحات از زرادخانه شما به {target.nameFa}
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {myOwnedWeaponsToSell.slice(0, 4).map(({ spec, cnt }) => {
+                      const askPrice = Math.round(spec.unitCostB * 0.82);
+                      return (
+                        <div
+                          key={spec.id}
+                          className="p-2.5 rounded-xl bg-[#060c18] border border-slate-800 flex items-center justify-between gap-2"
+                        >
+                          <div>
+                            <div className="text-xs font-bold text-white">
+                              {spec.nameFa} (×{cnt})
+                            </div>
+                            <div className="text-[10px] text-slate-400">فروش ۱ واحد به {target.nameFa}</div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              sound.playOrderConfirm();
+                              onProposeTrade({
+                                to: target.id,
+                                offerType: 'WEAPON',
+                                weaponId: spec.id,
+                                amount: 1,
+                                priceB: askPrice,
+                                direction: 'SELL',
+                              });
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs shrink-0"
+                          >
+                            فروش (+${askPrice}B)
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
-                <button
-                  type="button"
-                  onClick={() => onToggleSanction(target.id)}
-                  className={`p-3 rounded-xl border font-bold flex items-center justify-center gap-1.5 ${
-                    iSanctionThem
-                      ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
-                      : 'bg-rose-500/15 border-rose-500/40 text-rose-300'
-                  }`}
-                >
-                  <Ban className="w-4 h-4" />
-                  {iSanctionThem ? 'لغو تحریم اقتصادی' : 'تحریم اقتصادی این کشور'}
-                </button>
-              </div>
-
-              {/* Convene UN / IAEA / Aid Special Committee Votes */}
-              <div className="bg-[#0d172a] border border-amber-500/30 rounded-2xl p-3.5 space-y-2.5">
+              {/* 5. Convene UN / IAEA / Aid Special Committee Votes */}
+              <div className="glass-card border-amber-500/30 rounded-2xl p-3.5 space-y-2.5">
                 <div className="text-xs font-black text-amber-300 flex items-center gap-1.5">
                   <Scale className="w-4 h-4" />
-                  تشکیل جلسه و رای‌گیری رسمی در سازمان ملل و کمیته‌های بین‌المللی درباره {target.nameFa}:
+                  تشکیل پرونده در سازمان ملل و آژانس درباره {target.nameFa}:
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
                   <button
@@ -650,14 +893,14 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
                     onClick={() => onProposeResolution(target.id, 'IAEA_INSPECTION')}
                     className="p-2.5 rounded-xl bg-purple-500/15 hover:bg-purple-500/25 border border-purple-500/35 text-purple-200 font-bold text-right"
                   >
-                    ☢️ کمیته بازرسی هسته‌ای آژانس (IAEA)
+                    ☢️ پرونده بازرسی هسته‌ای آژانس (IAEA)
                   </button>
                   <button
                     type="button"
                     onClick={() => onProposeResolution(target.id, 'EMERGENCY_AID_PACKAGE')}
                     className="p-2.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-emerald-200 font-bold text-right"
                   >
-                    🏥 تصویب بسته کمک بازسازی $45B سازمان ملل
+                    🏥 تصویب بسته کمک بازسازی $45B
                   </button>
                   <button
                     type="button"

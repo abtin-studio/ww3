@@ -41,7 +41,7 @@ export interface ChokepointState {
   id: ChokepointId;
   nameFa: string;
   controller: CountryId;
-  coordinates: [number, number]; // [lng, lat]
+  coordinates: [number, number];
   status: ChokepointStatus;
   oilImpactFactor: number;
   descriptionFa: string;
@@ -50,12 +50,13 @@ export interface ChokepointState {
 export type InfrastructureType =
   | 'REFINERY'
   | 'POWER_PLANT'
-  | 'NUCLEAR_FACILITY'
+  | 'WELFARE_HUB'
+  | 'SCIENCE_ACADEMY'
   | 'ARMS_FACTORY'
   | 'RADAR_NETWORK'
   | 'CYBER_HQ'
   | 'AIR_MISSILE_BASE'
-  | 'WELFARE_HUB';
+  | 'NUCLEAR_FACILITY';
 
 export interface InfrastructureSpec {
   type: InfrastructureType;
@@ -66,7 +67,6 @@ export interface InfrastructureSpec {
   maxLevel: number;
 }
 
-// 8 Deep National Progression Doctrines (Lv.1 -> Lv.10 for 100-round longevity!)
 export type UpgradeTrack =
   | 'AEROSPACE'
   | 'AIR_DEFENSE'
@@ -103,6 +103,7 @@ export interface WeaponSpec {
   nameEn: string;
   originCountry: CountryId;
   category: WeaponCategory;
+  roleTagFa: string; // e.g. 'رادارگریز ضدپدافند' | 'هایپرسونیک سپرشکن' | 'شکارچی ناو'
   unitCostB: number;
   oilUsePerRound: number;
   attackPower: number;
@@ -111,7 +112,6 @@ export interface WeaponSpec {
   stealth: number; // 0 - 100
   rangeKm: number;
   minTrack?: { track: UpgradeTrack; level: number };
-  minArmsFactory?: number;
   batchLabelFa: string;
   shortDescFa: string;
 }
@@ -128,11 +128,12 @@ export type OrderKind =
   | 'MINOR_NATION_OPERATION';
 
 export type MilitaryOpType =
-  | 'AIR_SORTIE' // Dedicated Fighter & Bomber Air Superiority / SEAD / Bombing!
-  | 'MISSILE_DRONE_STRIKE' // Combined Drone Swarm + Precision Ballistic/Hypersonic Strike
-  | 'NAVAL_BLOCKADE_STRIKE' // Naval Fleet Attack + Port Blockade + Coastal Strike
-  | 'GROUND_CONQUEST' // Combined Land Armor + Air Offensive: Loot + Territorial Conquest!
-  | 'NUCLEAR_STRIKE'; // Strategic Nuclear Warhead Launch
+  | 'AIR_SORTIE'
+  | 'MISSILE_DRONE_STRIKE'
+  | 'NAVAL_BLOCKADE_STRIKE'
+  | 'GROUND_CONQUEST'
+  | 'LIBERATION_COUNTEROFFENSIVE'
+  | 'NUCLEAR_STRIKE';
 
 export type StrikeTargetSector =
   | 'MILITARY_BASES'
@@ -142,18 +143,18 @@ export type StrikeTargetSector =
   | 'AIR_DEFENSE_NET';
 
 export type CovertOpType =
-  | 'SAT_RECON' // Unlocks full intel + +15% precision for 3 rounds
-  | 'INSURGENCY_PSYOPS' // Media & internal unrest: -14% approval & +12% devastation
-  | 'BLACKOUT_VIRUS' // Blinds radar (suppresses 18s warning!) + drops powerGrid -26%
-  | 'TREASURY_HEIST' // Cyber central bank hack: steals $22B-$42B
-  | 'STUXNET_SABOTAGE' // Industrial worm: -25% nuclear & damages 1 factory/reactor
-  | 'ASSASSINATE_COMMANDER' // Targeted hit on top general: -25% enemy command & defense
-  | 'ASSASSINATE_SCIENTIST' // Targeted hit on nuclear/aero scientists: -28% nuclear & tech shock
-  | 'ASSASSINATE_MINISTER'; // High-level political/security assassination: -16% approval & +16% crisis
+  | 'SAT_RECON'
+  | 'INSURGENCY_PSYOPS'
+  | 'BLACKOUT_VIRUS'
+  | 'TREASURY_HEIST'
+  | 'STUXNET_SABOTAGE'
+  | 'ASSASSINATE_COMMANDER'
+  | 'ASSASSINATE_SCIENTIST'
+  | 'ASSASSINATE_MINISTER';
 
 export type MinorNationOpType =
-  | 'CONQUER_ANNEX' // Military conquest & territorial annexation of world nation
-  | 'COVERT_COUP'; // Intelligence-backed regime change & protectorate alignment
+  | 'CONQUER_ANNEX'
+  | 'COVERT_COUP';
 
 export interface GameOrder {
   id: string;
@@ -170,6 +171,7 @@ export interface GameOrder {
   summaryFa: string;
   expectedImpactFa: string;
   costB: number;
+  fuelCost: number;
 }
 
 export interface IntelReport {
@@ -187,6 +189,8 @@ export interface RevealedSnapshot {
   treasuryB: number;
   oilReserve: number;
   gasReserve: number;
+  foodReserve: number;
+  waterReserve: number;
   warheads: number;
   nuclearProgress: number;
   devastation: number;
@@ -215,6 +219,8 @@ export interface RoundSummaryForCountry {
   netIncomeB: number;
   autoSoldOilB: number;
   netOilDelta: number;
+  netFoodDelta: number;
+  netWaterDelta: number;
   approvalDelta: number;
   devastationDelta: number;
   myOperations: {
@@ -225,7 +231,7 @@ export interface RoundSummaryForCountry {
     detailFa: string;
   }[];
   incomingAttacks: {
-    attackerId: CountryId | null; // null = Untraced Covert Attack (No Identity Leak!)
+    attackerId: CountryId | null;
     attackerLabelFa: string;
     titleFa: string;
     repelled: boolean;
@@ -237,25 +243,38 @@ export interface RoundSummaryForCountry {
 export type AIPersonality = 'SUPERPOWER' | 'REGIONAL_HAWK' | 'ECONOMIC_POWER' | 'FORTRESS';
 
 export type EmergencyActionKind =
-  | 'REPAIR_GRID' // Restores +24% Power Grid & -14% Devastation (works even if infra MAX!)
-  | 'REPAIR_RADAR_CYBER' // Restores +45% Radar & +12% Cyber Shield
-  | 'NATIONAL_RELIEF'; // Emergency Relief: +14% Approval & -20% Devastation
+  | 'REPAIR_GRID'
+  | 'REPAIR_RADAR_CYBER'
+  | 'NATIONAL_RELIEF';
+
+export type DiplomaticActionKind =
+  | 'IMPROVE_RELATIONS' // Diplomatic envoy & goodwill ($14B -> +18 relation)
+  | 'THREATEN_ULTIMATUM' // Military coercion: forces weaker rival to back down / lift sanction / open strait!
+  | 'SOW_DISCORD'; // Covertly pits targetCountry against thirdCountry (-35 relation between them & breaks alliance!)
+
+export type UltimatumDemand =
+  | 'STOP_ATTACKS'
+  | 'LIFT_SANCTION'
+  | 'OPEN_CHOKEPOINT';
 
 export interface MinorNationState {
-  id: string; // ISO-3 numeric string e.g. '368' (Iraq)
+  id: string;
   isoNumeric: string;
-  code: string; // e.g. 'IQ', 'SY', 'PL', 'VE'
+  code: string;
   nameFa: string;
   regionFa: string;
   coordinates: [number, number];
-  gdpB: number; // Monthly bonus = round(gdpB * 0.06) when annexed/allied
+  gdpB: number;
   oilBonus: number;
   gasBonus: number;
   foodBonus: number;
-  garrisonPower: number; // Real defense strength against conquest
-  stability: number; // 0 - 100
-  alignedWith: CountryId | null; // Friendly protectorate / base access
-  conqueredBy: CountryId | null; // Annexed directly into conqueror's empire!
+  waterBonus: number;
+  garrisonPower: number;
+  stability: number;
+  alignedWith: CountryId | null;
+  occupierId: CountryId | null; // Invader currently occupying part of this nation
+  occupationPct: number; // 0..100% (100% = Fully Annexed!)
+  conqueredBy: CountryId | null;
 }
 
 export interface Coalition {
@@ -263,6 +282,7 @@ export interface Coalition {
   nameFa: string;
   leader: CountryId;
   members: CountryId[];
+  invited: CountryId[];
   createdRound: number;
 }
 
@@ -273,20 +293,21 @@ export interface CountryState {
   nameEn: string;
   flag: string;
   regionFa: string;
+  archetypeTagFa: string;
   capitalFa: string;
   agencyNameFa: string;
   agencyCode: string;
   isUNVetoMember: boolean;
   aiPersonality: AIPersonality;
   rivals: CountryId[];
-  coordinates: [number, number]; // [lng, lat]
-  labelOffset: [number, number]; // [dx, dy] on SVG map
+  coordinates: [number, number];
+  labelOffset: [number, number];
   doctrineSummaryFa: string;
   strengthsFa: string[];
   weaknessesFa: string[];
 
   // Controller & Regime Status
-  playerId: string | null; // null = Smart Living AI
+  playerId: string | null;
   playerName: string | null;
   isOnline: boolean;
   isReady: boolean;
@@ -294,8 +315,9 @@ export interface CountryState {
   eliminatedRound: number | null;
   eliminatedReasonFa: string | null;
   conqueredBy: CountryId | null;
+  occupierId: CountryId | null; // Tracks chief invader occupying border provinces
 
-  // Economy & Resources
+  // Economy & 5 Strategic Resources (Treasury, Oil, Gas, Food, Water + Uranium)
   treasuryB: number;
   gdpB: number;
   autoSellSurplus: boolean;
@@ -308,13 +330,16 @@ export interface CountryState {
   foodReserve: number;
   foodProduction: number;
   foodConsumption: number;
+  waterReserve: number;
+  waterProduction: number;
+  waterConsumption: number;
   uraniumReserve: number;
 
   // Stability, Integrity & Strategic Readiness
   approval: number; // 0 - 100
-  devastation: number; // 0 - 100 (High devastation + low approval -> Regime Collapse!)
-  integrityPct: number; // 0 - 100 (Territorial integrity; 0% -> Conquered & Eliminated!)
-  regimeCrisisStreak: number; // Consecutive rounds in deep regime crisis
+  devastation: number; // 0 - 100
+  integrityPct: number; // 0 - 100
+  regimeCrisisStreak: number;
   powerGrid: number; // 0 - 100
   radarIntegrity: number; // 0 - 100
   cyberShield: number; // 0 - 100
@@ -322,14 +347,17 @@ export interface CountryState {
   techLevel: number; // 1 - 12
   nuclearProgress: number; // 0 - 100
   warheads: number;
-  commanderBuff: number; // -35 to +30
-  securityAlertBonus: number; // Temporary counter-intel boost after covert attacks
-  maritimeBlockaded: boolean; // Naval blockade penalty active this round
+  commanderBuff: number;
+  securityAlertBonus: number;
+  maritimeBlockaded: boolean;
   militaryXp: number;
 
-  // Monthly Construction & Research Pacing
+  // Monthly Pacing & Operational Quotas
   upgradesUsedThisRound: number;
   buildsUsedThisRound: number;
+  militaryOrdersUsedThisRound: number;
+  covertOrdersUsedThisRound: number;
+  assassinationsUsedThisRound: number;
 
   // 8 Level-Up National Progression Pillars (Lv.0 -> Lv.10)
   upgrades: Record<UpgradeTrack, number>;
@@ -339,8 +367,10 @@ export interface CountryState {
   damagedInfra: Record<InfrastructureType, number>;
   weapons: Record<string, number>;
 
-  // Diplomacy, Coalitions & Relations
+  // Diplomacy, Bilateral Relations (-100..+100), Truces & Coalitions
   coalitionId: string | null;
+  relations: Record<CountryId, number>;
+  nonAggressionPacts: Partial<Record<CountryId, number>>; // CountryId -> expiresAtRound
   allies: CountryId[];
   sanctionedBy: CountryId[];
   airspaceOpenTo: CountryId[];
@@ -390,15 +420,17 @@ export interface MapVisualEvent {
   kind: 'FLIGHT' | 'MISSILE' | 'DRONE' | 'NAVAL' | 'CYBER' | 'INVASION' | 'NUCLEAR' | 'TRADE' | 'RECON';
   labelFa: string;
   intercepted?: boolean;
-  secretActorOnly?: boolean; // Hidden from other players unless traced!
+  secretActorOnly?: boolean;
 }
 
 export type TradeResourceKind =
   | 'OIL'
   | 'GAS'
   | 'FOOD'
+  | 'WATER'
   | 'URANIUM'
   | 'WEAPON'
+  | 'PEACE_TREATY'
   | 'ALLIANCE'
   | 'LIFT_SANCTION';
 
@@ -457,6 +489,7 @@ export interface LobbyPlayer {
   name: string;
   isHost: boolean;
   isGM: boolean;
+  isReadyInLobby?: boolean;
   countryId: CountryId | null;
   connected: boolean;
 }
@@ -470,12 +503,50 @@ export interface GameSettings {
   enableAINations: boolean;
 }
 
+export interface RankingEntry {
+  countryId: CountryId;
+  score: number;
+  tierFa: 'ابرقدرت جهانی' | 'قدرت بزرگ' | 'قدرت منطقه‌ای' | 'در بحران' | 'سقوط‌کرده';
+  economicScore: number;
+  militaryScore: number;
+  techScore: number;
+  stabilityScore: number;
+  influenceScore: number;
+  territoriesCount: number;
+  totalUnits: number;
+  gdpB: number;
+}
+
+export interface CreatorCheatPayload {
+  secretKey: string;
+  targetCountry: CountryId;
+  action:
+    | 'ADD_RESOURCES'
+    | 'SET_DOCTRINES_MAX'
+    | 'HEAL_ALL'
+    | 'ADD_ELITE_ARMY'
+    | 'FORCE_COLLAPSE'
+    | 'REVIVE_COUNTRY'
+    | 'FORCE_NEXT_ROUND';
+  treasuryDelta?: number;
+  oilDelta?: number;
+  foodDelta?: number;
+  waterDelta?: number;
+  warheadsDelta?: number;
+  approvalDelta?: number;
+  devastationDelta?: number;
+}
+
 export interface GameRoomState {
-  schemaVersion: 3;
+  schemaVersion: 4;
   roomCode: string;
   roomName: string;
   createdAt: number;
   phase: GamePhase;
+  isPaused: boolean;
+  pausedRemainingMs: number | null;
+  isResumedSave?: boolean;
+  lastSavedCode?: string | null;
   round: number;
   calendarLabelFa: string;
   phaseEndsAt: number | null;
@@ -494,13 +565,5 @@ export interface GameRoomState {
   messages: ChatMessage[];
   resolutions: UNResolution[];
   winnerSummaryFa: string | null;
-  rankings: {
-    countryId: CountryId;
-    score: number;
-    economicScore: number;
-    militaryScore: number;
-    stabilityScore: number;
-    influenceScore: number;
-    territoriesCount: number;
-  }[];
+  rankings: RankingEntry[];
 }
