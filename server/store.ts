@@ -18,11 +18,15 @@ export class RoomStore {
       if (!fs.existsSync(STORE_FILE)) return;
       const raw = fs.readFileSync(STORE_FILE, 'utf-8');
       const parsed = JSON.parse(raw) as Record<string, GameRoomState>;
-      const cutoff = Date.now() - 1000 * 60 * 60 * 72; // Keep lobbies from last 72h
+      const cutoff = Date.now() - 1000 * 60 * 60 * 72;
       for (const [code, room] of Object.entries(parsed)) {
-        // Ensure compatibility with v2.0 room schema
-        if (room.createdAt >= cutoff && room.countries?.IR?.upgrades) {
-          // Mark sockets disconnected on fresh boot until clients reconnect
+        // Strict v3 schema guard so legacy v1/v2 rooms never cause missing-field crashes
+        if (
+          room.schemaVersion === 3 &&
+          room.createdAt >= cutoff &&
+          room.countries?.IR?.damagedInfra &&
+          room.minorNations
+        ) {
           for (const p of room.players) p.connected = false;
           for (const c of Object.values(room.countries)) c.isOnline = false;
           this.rooms.set(code, room);

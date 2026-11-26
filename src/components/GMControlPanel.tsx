@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Mic, FastForward, Zap, Send, Eye } from 'lucide-react';
 import { CountryId, GameRoomState } from '../../shared/types';
+import { CountryFlag } from './CountryFlag';
 
 interface GMControlPanelProps {
   room: GameRoomState;
@@ -53,15 +54,14 @@ export const GMControlPanel: React.FC<GMControlPanelProps> = ({
 
   return (
     <div className="space-y-4">
-      {/* Top GM Action Banner */}
       <div className="bg-amber-500/15 border border-amber-400/50 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h2 className="font-black text-base text-amber-300 flex items-center gap-2">
             <Mic className="w-5 h-5" />
-            اتاق فرمان و کارگردانی راوی کل جهان (دید مطلق بدون مهِ جنگ)
+            اتاق کارگردانی راوی کل جهان (دید کامل بدون مه جنگ)
           </h2>
           <p className="text-xs text-slate-300 mt-0.5">
-            تمام دستورات محرمانه بازیکنان را در پایین می‌بینید. هر زمان خواستید خبر فوری منتشر کنید یا ماه بعدی را اجرا کنید.
+            تمامی دستورات محرمانه بازیکنان را در پایین می‌بینید و می‌توانید رویدادهای ویژه یا ماه بعدی را اجرا کنید.
           </p>
         </div>
         <button
@@ -74,12 +74,11 @@ export const GMControlPanel: React.FC<GMControlPanelProps> = ({
         </button>
       </div>
 
-      {/* Publish Custom Breaking News */}
       <form
         onSubmit={submitNews}
         className="bg-[#0b1324] border border-slate-800 rounded-2xl p-4 space-y-3"
       >
-        <div className="font-bold text-sm text-white">📺 انتشار تیتر خبری اختصاصی در کانال جهان</div>
+        <div className="font-bold text-sm text-white">📺 مخابره تیتر خبری اختصاصی</div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
           <input
             type="text"
@@ -92,7 +91,7 @@ export const GMControlPanel: React.FC<GMControlPanelProps> = ({
             type="text"
             value={headlineFa}
             onChange={(e) => setHeadlineFa(e.target.value)}
-            placeholder="تیتر خبر فوری (مثلاً: نشست محرمانه سران در مسکو لو رفت!)"
+            placeholder="تیتر خبر فوری..."
             className="sm:col-span-2 px-3 py-2.5 rounded-xl bg-[#060b14] border border-slate-700 text-white"
           />
         </div>
@@ -101,7 +100,7 @@ export const GMControlPanel: React.FC<GMControlPanelProps> = ({
             type="text"
             value={bodyFa}
             onChange={(e) => setBodyFa(e.target.value)}
-            placeholder="توضیحات تکمیلی خبر..."
+            placeholder="متن تکمیلی گزارش..."
             className="flex-1 px-3 py-2.5 rounded-xl bg-[#060b14] border border-slate-700 text-xs text-slate-200"
           />
           <label className="flex items-center gap-1.5 text-xs text-rose-300 font-bold px-2">
@@ -110,23 +109,22 @@ export const GMControlPanel: React.FC<GMControlPanelProps> = ({
               checked={breaking}
               onChange={(e) => setBreaking(e.target.checked)}
             />
-            زنگ خبر فوری
+            زنگ فوری
           </label>
           <button
             type="submit"
             className="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-xs flex items-center justify-center gap-1.5"
           >
             <Send className="w-3.5 h-3.5" />
-            مخابره در جهان
+            انتشار
           </button>
         </div>
       </form>
 
-      {/* Instant World Crises & Country Tweaks */}
       <div className="bg-[#0b1324] border border-slate-800 rounded-2xl p-4 space-y-3">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <span className="font-bold text-sm text-white flex items-center gap-1.5">
-            <Zap className="w-4 h-4 text-amber-400" /> اعمال رویداد یا تغییر مستقیم روی کشور:
+            <Zap className="w-4 h-4 text-amber-400" /> اعمال رویداد یا تنظیم کشور:
           </span>
           <select
             value={targetCountry}
@@ -135,7 +133,7 @@ export const GMControlPanel: React.FC<GMControlPanelProps> = ({
           >
             {Object.values(room.countries).map((c) => (
               <option key={c.id} value={c.id}>
-                {c.flag} {c.nameFa} {c.playerName ? `(${c.playerName})` : ''}
+                {c.nameFa} {c.playerName ? `(${c.playerName})` : ''}
               </option>
             ))}
           </select>
@@ -154,7 +152,7 @@ export const GMControlPanel: React.FC<GMControlPanelProps> = ({
             onClick={() => onTriggerEvent({ targetCountry, preset: 'EARTHQUAKE' })}
             className="p-2.5 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-200 font-bold"
           >
-            🌋 زلزله در زیرساخت
+            🌋 زلزله زیرساختی
           </button>
           <button
             type="button"
@@ -168,7 +166,7 @@ export const GMControlPanel: React.FC<GMControlPanelProps> = ({
             onClick={() => onTriggerEvent({ preset: 'GLOBAL_OIL_SHOCK' })}
             className="p-2.5 rounded-xl bg-purple-500/15 border border-purple-500/40 text-purple-200 font-bold"
           >
-            📈 جهش قیمت جهانی نفت
+            📈 شوک قیمت نفت
           </button>
         </div>
 
@@ -204,19 +202,21 @@ export const GMControlPanel: React.FC<GMControlPanelProps> = ({
         </div>
       </div>
 
-      {/* God-View of Secret Queued Orders */}
       <div className="bg-[#0b1324] border border-slate-800 rounded-2xl p-4 space-y-2.5">
         <h3 className="text-sm font-black text-cyan-300 flex items-center gap-1.5">
           <Eye className="w-4 h-4" />
-          رصد لحظه‌ای دستورات مخفی همه بازیکنان در این ماه
+          رصد لحظه‌ای دستورات مخفی همه کشورها در این ماه
         </h3>
         <div className="space-y-2">
           {Object.values(room.countries)
             .filter((c) => c.orders.length > 0)
             .map((c) => (
               <div key={c.id} className="p-3 rounded-xl bg-[#070d19] border border-slate-800 text-xs">
-                <div className="font-bold text-white mb-1">
-                  {c.flag} {c.nameFa} {c.playerName ? `(${c.playerName})` : '(AI)'}:
+                <div className="font-bold text-white mb-1 flex items-center gap-1.5">
+                  <CountryFlag countryId={c.id} size="sm" />
+                  <span>
+                    {c.nameFa} {c.playerName ? `(${c.playerName})` : '(AI)'}:
+                  </span>
                 </div>
                 <ul className="list-disc list-inside text-slate-300 space-y-0.5">
                   {c.orders.map((o) => (

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { Copy, Check, Crown, Mic, Bot, Shield, Play, Users, LogOut } from 'lucide-react';
+import { Copy, Check, Crown, Mic, Bot, Shield, Play, Users, LogOut, Gauge } from 'lucide-react';
 import { computeCountryMilitary } from '../../shared/advisor';
-import { CountryId, GameRoomState, GameSettings } from '../../shared/types';
+import { CountryId, DifficultyLevel, GameRoomState, GameSettings } from '../../shared/types';
 import { CountryFlag } from './CountryFlag';
 
 interface LobbyScreenProps {
@@ -26,6 +26,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   const [copied, setCopied] = useState(false);
   const me = room.players.find((p) => p.id === playerId);
   const isHost = Boolean(me?.isHost);
+  const isSingle = room.settings.gameMode === 'SINGLE';
 
   const inviteUrl =
     typeof window !== 'undefined'
@@ -48,26 +49,40 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
         <div className="bg-[#0b1220]/95 border border-slate-700/80 rounded-2xl p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="space-y-1">
             <div className="flex items-center gap-2.5 flex-wrap">
-              <span className="px-3 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/40 font-mono font-bold text-emerald-300 text-sm tracking-widest">
-                کد لابی: {room.roomCode}
+              {!isSingle && (
+                <span className="px-3 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/40 font-mono font-bold text-emerald-300 text-sm tracking-widest">
+                  کد لابی: {room.roomCode}
+                </span>
+              )}
+              <span className="px-2.5 py-1 rounded-lg bg-amber-500/15 border border-amber-500/35 text-amber-300 text-xs font-bold">
+                {isSingle ? '👤 کمپین تک‌نفره' : '👥 مولتی‌پلیر آنلاین'} • سختی:{' '}
+                {room.settings.difficulty === 'EXTREME'
+                  ? 'فوق‌سنگین'
+                  : room.settings.difficulty === 'HARD'
+                  ? 'چالشی'
+                  : 'متعادل'}{' '}
+                • {room.settings.maxRounds} دور
               </span>
               <h1 className="text-xl sm:text-2xl font-black text-white">{room.roomName}</h1>
             </div>
             <p className="text-xs sm:text-sm text-slate-400">
-              لینک دعوت را برای دوستات بفرست؛ هر کشوری که بازیکن انسانی برندارد توسط{' '}
-              <span className="text-cyan-300 font-semibold">هوش مصنوعی استراتژیک</span> اداره می‌شود!
+              {isSingle
+                ? 'کشور مورد نظر خود را از لیست زیر انتخاب کنید و بلافاصله وارد اتاق جنگ شوید؛ ۱۹ قدرت دیگر و ۱۵۵ کشور جهان به صورت زنده رقابت می‌کنند!'
+                : 'لینک دعوت را برای دوستان بفرستید؛ هر کشوری که بازیکن انسانی برندارد توسط هوش مصنوعی استراتژیک اداره می‌شود.'}
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
-            <button
-              type="button"
-              onClick={copyInvite}
-              className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs sm:text-sm font-bold text-white flex items-center gap-2 transition"
-            >
-              {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4 text-cyan-400" />}
-              {copied ? 'لینک دعوت کپی شد!' : 'کپی لینک دعوت دوستان'}
-            </button>
+            {!isSingle && (
+              <button
+                type="button"
+                onClick={copyInvite}
+                className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs sm:text-sm font-bold text-white flex items-center gap-2 transition"
+              >
+                {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4 text-cyan-400" />}
+                {copied ? 'لینک دعوت کپی شد!' : 'کپی لینک دعوت دوستان'}
+              </button>
+            )}
 
             <button
               type="button"
@@ -86,17 +101,44 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
           </div>
         )}
 
-        {/* Players + GM Switch + Start Button */}
+        {/* Players + Live Settings Customization + Start Button */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="lg:col-span-2 bg-[#0b1220]/90 border border-slate-800 rounded-2xl p-4 space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-2">
               <h2 className="text-sm font-bold text-slate-200 flex items-center gap-2">
                 <Users className="w-4 h-4 text-emerald-400" />
-                اعضای حاضر در اتاق جنگ ({room.players.length} نفر)
+                فرماندهان حاضر ({room.players.length} نفر)
               </h2>
-              <span className="text-xs text-slate-400">
-                {room.settings.gmMode === 'HUMAN' ? '🎙️ حالت راوی انسانی فعال' : '🤖 حالت راوی خودکار فعال'}
-              </span>
+              {isHost && (
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="text-slate-400 flex items-center gap-1">
+                    <Gauge className="w-3.5 h-3.5 text-amber-400" /> سختی:
+                  </span>
+                  {(['NORMAL', 'HARD', 'EXTREME'] as DifficultyLevel[]).map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => onUpdateSettings({ difficulty: d })}
+                      className={`px-2 py-1 rounded-lg font-bold border ${
+                        room.settings.difficulty === d
+                          ? 'bg-amber-400 text-slate-950 border-amber-300'
+                          : 'bg-slate-900 text-slate-400 border-slate-700'
+                      }`}
+                    >
+                      {d === 'NORMAL' ? 'متعادل' : d === 'HARD' ? 'چالشی' : 'فوق‌سنگین'}
+                    </button>
+                  ))}
+                  <span className="text-slate-400 mr-1">دورها:</span>
+                  <input
+                    type="number"
+                    min={6}
+                    max={200}
+                    value={room.settings.maxRounds}
+                    onChange={(e) => onUpdateSettings({ maxRounds: Number(e.target.value) })}
+                    className="w-16 px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-center font-mono text-emerald-300"
+                  />
+                </div>
+              )}
             </div>
 
             <div className="flex flex-wrap gap-2">
@@ -118,11 +160,11 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                     {p.isGM ? (
                       <span className="text-amber-300 font-bold">🎙️ راوی کل جهان</span>
                     ) : c ? (
-                      <span className="text-emerald-300 font-bold">
-                        {c.flag} {c.nameFa}
+                      <span className="text-emerald-300 font-bold flex items-center gap-1.5">
+                        <CountryFlag countryId={c.id} size="sm" /> {c.nameFa}
                       </span>
                     ) : (
-                      <span className="text-slate-500">در حال انتخاب کشور...</span>
+                      <span className="text-slate-500">در انتظار انتخاب کشور...</span>
                     )}
                   </div>
                 );
@@ -133,7 +175,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
           {/* Host & GM Role Panel */}
           <div className="bg-[#0b1220]/90 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between gap-3">
             <div className="space-y-2">
-              {isHost && (
+              {isHost && !isSingle && (
                 <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-800">
                   <span className="text-xs font-bold text-slate-300">حالت راوی:</span>
                   <div className="flex gap-1.5">
@@ -186,7 +228,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                 className="w-full py-3.5 rounded-xl bg-gradient-to-l from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black text-sm sm:text-base flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/25 transition"
               >
                 <Play className="w-5 h-5 fill-current" />
-                شروع بازی و باز کردن اتاق فرماندهی!
+                {isSingle ? 'شروع فوری کارزار تک‌نفره!' : 'شروع بازی و باز کردن اتاق فرماندهی!'}
               </button>
             ) : (
               <div className="text-center py-3 rounded-xl bg-slate-900/90 border border-slate-800 text-xs text-slate-400">
@@ -196,11 +238,11 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
           </div>
         </div>
 
-        {/* 16 Real Countries Selection Grid */}
+        {/* 20 Real Countries Selection Grid */}
         <div>
           <h2 className="text-base sm:text-lg font-black text-white mb-3 flex items-center gap-2">
             <Shield className="w-5 h-5 text-emerald-400" />
-            انتخاب کشور (بر اساس قدرت اقتصادی، انرژی و تسلیحات واقعی جهان)
+            انتخاب یکی از ۲۰ قدرت اصلی (بر اساس آمار اقتصادی، انرژی و تسلیحات واقعی جهان)
           </h2>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -230,7 +272,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                         <div>
                           <div className="font-black text-white text-sm sm:text-base">{c.nameFa}</div>
                           <div className="text-[11px] text-slate-400">
-                            {c.capitalFa} • اطلاعات: {c.agencyCode}
+                            {c.capitalFa} • {c.agencyCode}
                           </div>
                         </div>
                       </div>
@@ -245,14 +287,13 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                       {c.doctrineSummaryFa}
                     </p>
 
-                    {/* Quick Real Stat Pills */}
                     <div className="grid grid-cols-3 gap-1.5 pt-1 text-[11px]">
                       <div className="bg-[#060b14] rounded-lg px-2 py-1.5 border border-slate-800/80">
                         <div className="text-slate-400 text-[10px]">خزانه</div>
                         <div className="font-bold text-emerald-300 font-mono">${c.treasuryB}B</div>
                       </div>
                       <div className="bg-[#060b14] rounded-lg px-2 py-1.5 border border-slate-800/80">
-                        <div className="text-slate-400 text-[10px]">تولید نفت</div>
+                        <div className="text-slate-400 text-[10px]">نفت خام</div>
                         <div className="font-bold text-amber-300 font-mono">{c.oilProduction}</div>
                       </div>
                       <div className="bg-[#060b14] rounded-lg px-2 py-1.5 border border-slate-800/80">

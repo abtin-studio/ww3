@@ -1,5 +1,5 @@
 import React from 'react';
-import { CheckCircle2, XCircle, ShieldAlert, TrendingUp, Globe2, ArrowLeft } from 'lucide-react';
+import { CheckCircle2, XCircle, ShieldAlert, TrendingUp, Globe2, ArrowLeft, EyeOff } from 'lucide-react';
 import { GameRoomState, RoundSummaryForCountry } from '../../shared/types';
 import { CountryFlag } from './CountryFlag';
 
@@ -26,7 +26,7 @@ export const RoundSummaryModal: React.FC<RoundSummaryModalProps> = ({
               گزارش رسمی پایان ماه {summary.roundResolved}
             </span>
             <h2 className="text-lg sm:text-xl font-black text-white mt-0.5">
-              📊 خلاصه اتفاقات {summary.monthLabelFa}
+              📊 خلاصه عملکرد و تحولات {summary.monthLabelFa}
             </h2>
           </div>
           <span className="px-3 py-1 rounded-xl bg-amber-500/15 border border-amber-500/35 text-amber-300 font-mono text-xs font-bold">
@@ -48,20 +48,9 @@ export const RoundSummaryModal: React.FC<RoundSummaryModalProps> = ({
               </div>
               {summary.autoSoldOilB > 0 && (
                 <div className="text-[10px] text-amber-300 mt-0.5">
-                  (شامل +${summary.autoSoldOilB}B فروش خودکار نفت)
+                  (+${summary.autoSoldOilB}B فروش خودکار مازاد)
                 </div>
               )}
-            </div>
-
-            <div className="p-3 rounded-2xl bg-[#0d1930] border border-slate-800">
-              <div className="text-[11px] text-slate-400">تراز نفت ماهانه</div>
-              <div
-                className={`text-base sm:text-lg font-black font-mono mt-0.5 ${
-                  summary.netOilDelta >= 0 ? 'text-amber-300' : 'text-rose-300'
-                }`}
-              >
-                {summary.netOilDelta >= 0 ? `+${summary.netOilDelta}` : summary.netOilDelta}
-              </div>
             </div>
 
             <div className="p-3 rounded-2xl bg-[#0d1930] border border-slate-800">
@@ -74,29 +63,46 @@ export const RoundSummaryModal: React.FC<RoundSummaryModalProps> = ({
                 {summary.approvalDelta >= 0 ? `+${summary.approvalDelta}٪` : `${summary.approvalDelta}٪`}
               </div>
             </div>
+
+            <div className="p-3 rounded-2xl bg-[#0d1930] border border-slate-800">
+              <div className="text-[11px] text-slate-400">تغییر ویرانی کشور</div>
+              <div
+                className={`text-base sm:text-lg font-black font-mono mt-0.5 ${
+                  summary.devastationDelta <= 0 ? 'text-emerald-300' : 'text-rose-400'
+                }`}
+              >
+                {summary.devastationDelta > 0 ? `+${summary.devastationDelta}٪` : `${summary.devastationDelta}٪`}
+              </div>
+            </div>
           </div>
 
-          {/* 2. Incoming Attacks on My Country (if any!) */}
+          {/* 2. Incoming Attacks on My Country (Strict Covert Anonymity When Untraced!) */}
           {summary.incomingAttacks.length > 0 && (
             <div className="bg-rose-950/25 border border-rose-500/40 rounded-2xl p-3.5 space-y-2">
               <h3 className="text-xs sm:text-sm font-black text-rose-300 flex items-center gap-1.5">
                 <ShieldAlert className="w-4 h-4" />
-                حملات و عملیات‌های دشمن علیه کشور شما:
+                حملات و عملیات‌های انجام‌شده علیه کشور شما:
               </h3>
               {summary.incomingAttacks.map((atk, idx) => {
-                const enemy = room.countries[atk.attackerId];
+                const knownEnemy = atk.attackerId ? room.countries[atk.attackerId] : null;
                 return (
                   <div
                     key={idx}
                     className="p-2.5 rounded-xl bg-[#090f1d] border border-slate-800 text-xs space-y-1"
                   >
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-white flex items-center gap-1.5">
-                        {enemy && <CountryFlag countryId={enemy.id} size="sm" />}
-                        {atk.titleFa}
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-white flex items-center gap-1.5 flex-wrap">
+                        {knownEnemy ? (
+                          <CountryFlag countryId={knownEnemy.id} size="sm" />
+                        ) : (
+                          <span className="px-1.5 py-0.5 rounded bg-purple-500/20 border border-purple-500/40 text-purple-200 text-[10px] flex items-center gap-1">
+                            <EyeOff className="w-3 h-3" /> منشا ناشناس
+                          </span>
+                        )}
+                        <span>{atk.titleFa}</span>
                       </span>
                       <span
-                        className={`px-2 py-0.5 rounded font-bold text-[10px] ${
+                        className={`px-2 py-0.5 rounded font-bold text-[10px] shrink-0 ${
                           atk.repelled
                             ? 'bg-emerald-500/20 text-emerald-300'
                             : 'bg-rose-500/25 text-rose-300'
@@ -117,24 +123,24 @@ export const RoundSummaryModal: React.FC<RoundSummaryModalProps> = ({
             <div className="bg-[#0d182d] border border-slate-800 rounded-2xl p-3.5 space-y-2">
               <h3 className="text-xs sm:text-sm font-black text-cyan-300 flex items-center gap-1.5">
                 <TrendingUp className="w-4 h-4" />
-                نتیجه عملیات‌های ارتش و اطلاعات شما:
+                نتیجه عملیات‌های ارتش و سرویس اطلاعاتی شما:
               </h3>
               {summary.myOperations.map((op, idx) => (
                 <div
                   key={idx}
                   className="p-2.5 rounded-xl bg-[#070e1b] border border-slate-800 text-xs space-y-1"
                 >
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-2">
                     <span className="font-bold text-white flex items-center gap-1.5">
-                      <CountryFlag countryId={op.targetId} size="sm" />
+                      {op.targetId && <CountryFlag countryId={op.targetId} size="sm" />}
                       {op.titleFa}
                     </span>
                     {op.succeeded ? (
-                      <span className="text-emerald-400 font-bold flex items-center gap-1">
+                      <span className="text-emerald-400 font-bold flex items-center gap-1 shrink-0">
                         <CheckCircle2 className="w-3.5 h-3.5" /> موفق
                       </span>
                     ) : (
-                      <span className="text-rose-400 font-bold flex items-center gap-1">
+                      <span className="text-rose-400 font-bold flex items-center gap-1 shrink-0">
                         <XCircle className="w-3.5 h-3.5" /> ناموفق / رهگیری
                       </span>
                     )}
@@ -150,7 +156,7 @@ export const RoundSummaryModal: React.FC<RoundSummaryModalProps> = ({
             <div className="bg-[#0d182d] border border-slate-800 rounded-2xl p-3.5 space-y-2">
               <h3 className="text-xs sm:text-sm font-black text-amber-300 flex items-center gap-1.5">
                 <Globe2 className="w-4 h-4" />
-                مهم‌ترین تحولات جهان در این ماه:
+                مهم‌ترین تیترهای خبری جهان در این ماه:
               </h3>
               <ul className="space-y-1.5 text-xs text-slate-200">
                 {summary.worldHighlightsFa.map((hl, i) => (
@@ -170,7 +176,7 @@ export const RoundSummaryModal: React.FC<RoundSummaryModalProps> = ({
             onClick={onDismiss}
             className="w-full py-3 rounded-xl bg-gradient-to-l from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black text-sm flex items-center justify-center gap-2 shadow-lg transition"
           >
-            ورود به اتاق فرماندهی ماه جدید ({room.calendarLabelFa})
+            ادامه کارزار در ماه جدید ({room.calendarLabelFa})
             <ArrowLeft className="w-4 h-4" />
           </button>
         </div>

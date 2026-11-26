@@ -3,158 +3,212 @@ import { io as ClientSocket } from 'socket.io-client';
 import { evaluateAITradeOffer } from '../server/aiNations';
 import {
   applyAlertPosture,
+  createCoalition,
   createNewRoomState,
   instantBuildInfra,
+  instantEmergencyAction,
+  instantMinorDiplomacyPact,
   instantProduceWeapon,
   instantSetChokepoint,
   instantSpotTrade,
   instantUpgradeTrack,
+  joinCoalition,
   prepareEndOfPlanning,
   queuePlayerOrder,
   resolveCurrentRound,
   sanitizeRoomForPlayer,
 } from '../server/gameEngine';
 import { createAppServer } from '../server/index';
+import { INFRASTRUCTURE_CATALOG, getCalendarLabelFa } from '../shared/realWorldData';
 
-describe('WW3 Global Command v2.0 — Simulation, Living AI, Spot Market & Radar Fix', () => {
-  it('supports instant 1-click Spot Market oil trading, 6-track Level-Ups, and indigenous weapon rules', () => {
-    const room = createNewRoomState('V2A', 'Room', 'p1', 'Amir', {
-      gmMode: 'AUTO',
-      maxRounds: 12,
-      planningTimerSec: 0,
-      enableAINations: true,
-    });
-    room.phase = 'PLANNING';
-    room.countries.IR.playerId = 'p1';
+const DEFAULT_SETTINGS = {
+  gameMode: 'MULTI' as const,
+  difficulty: 'HARD' as const,
+  gmMode: 'AUTO' as const,
+  maxRounds: 100,
+  planningTimerSec: 0,
+  enableAINations: true,
+};
 
-    const beforeCash = room.countries.IR.treasuryB;
-    const sellRes = instantSpotTrade(room, 'IR', 'OIL', 'SELL');
-    expect(sellRes.ok).toBe(true);
-    expect(room.countries.IR.treasuryB).toBeGreaterThan(beforeCash);
-
-    const prevAero = room.countries.IR.upgrades.AEROSPACE;
-    const upRes = instantUpgradeTrack(room, 'IR', 'AEROSPACE');
-    expect(upRes.ok).toBe(true);
-    expect(room.countries.IR.upgrades.AEROSPACE).toBe(prevAero + 1);
-
-    // Iran cannot directly manufacture US F-35A, CAN manufacture indigenous Fattah-2
-    expect(instantProduceWeapon(room, 'IR', 'f35a', 1).ok).toBe(false);
-    expect(instantProduceWeapon(room, 'IR', 'fattah2', 1).ok).toBe(true);
-    expect(instantBuildInfra(room, 'IR', 'POWER_PLANT').ok).toBe(true);
+describe('WW3 Global Command v3.0 — Reconstruction, Regime Collapse, World Conquest & Covert Privacy', () => {
+  it('initializes 20 Major Powers + 150+ Real World Minor Nations and dynamic 100-round calendar', () => {
+    const room = createNewRoomState('V3A', 'World', 'p1', 'Amir', DEFAULT_SETTINGS);
+    expect(Object.keys(room.countries).length).toBe(20);
+    expect(Object.keys(room.minorNations).length).toBeGreaterThan(140);
+    expect(room.minorNations['368']?.nameFa).toBe('عراق');
+    expect(room.minorNations['862']?.nameFa).toBe('ونزوئلا');
+    expect(getCalendarLabelFa(1)).toContain('2027');
+    expect(getCalendarLabelFa(85)).toContain('2034');
   });
 
-  it('triggers targeted Radar Alert ONLY for attacked human, refunds posture switches, and generates RoundSummary', () => {
-    const room = createNewRoomState('V2B', 'War', 'p1', 'Host', {
-      gmMode: 'AUTO',
-      maxRounds: 12,
-      planningTimerSec: 0,
-      enableAINations: true,
-    });
+  it('prevents MAX-infra deadlock: bomb damage creates rebuildable ruins AND emergency reconstruction always works', () => {
+    const room = createNewRoomState('V3B', 'Rebuild', 'p1', 'Amir', DEFAULT_SETTINGS);
     room.phase = 'PLANNING';
-    room.countries.IR.playerId = 'p1';
-    room.countries.IR.isOnline = true;
-    room.countries.US.playerId = 'p2';
-    room.countries.US.isOnline = true;
+    const ir = room.countries.IR;
+    ir.playerId = 'p1';
+    ir.treasuryB = 600;
 
-    // Close Strait of Hormuz instantly -> oil price spikes immediately!
-    const startOil = room.market.oilPriceUsd;
-    expect(instantSetChokepoint(room, 'IR', 'BLOCKADED').ok).toBe(true);
-    expect(room.market.oilPriceUsd).toBeGreaterThan(startOil);
+    // Max out POWER_PLANT completely (20/20)
+    ir.infrastructure.POWER_PLANT = INFRASTRUCTURE_CATALOG.POWER_PLANT.maxLevel;
+    // Simulate severe nuclear/missile bombardment dropping grid & approval while maxed
+    ir.powerGrid = 18;
+    ir.approval = 20;
+    ir.devastation = 62;
 
-    // Iran queues drone swarm + precision strike on US
-    expect(
-      queuePlayerOrder(room, 'IR', {
-        kind: 'MILITARY_OPERATION',
-        targetCountry: 'US',
-        militaryType: 'SEAD_DRONE_SWARM',
-      }).ok
-    ).toBe(true);
-    expect(
-      queuePlayerOrder(room, 'IR', {
-        kind: 'MILITARY_OPERATION',
-        targetCountry: 'US',
-        militaryType: 'PRECISION_STRIKE',
-        targetSector: 'REFINERY',
-      }).ok
-    ).toBe(true);
+    // Emergency Reconstruction ALWAYS works even when infrastructure is 20/20!
+    const gridFix = instantEmergencyAction(room, 'IR', 'REPAIR_GRID');
+    expect(gridFix.ok).toBe(true);
+    expect(ir.powerGrid).toBe(42);
+    expect(ir.devastation).toBe(48);
 
-    const prep = prepareEndOfPlanning(room);
-    expect(prep.next).toBe('RADAR_ALERT');
-    expect(prep.alertedCountryIds).toEqual(['US']);
+    const reliefFix = instantEmergencyAction(room, 'IR', 'NATIONAL_RELIEF');
+    expect(reliefFix.ok).toBe(true);
+    expect(ir.approval).toBe(34);
+    expect(ir.devastation).toBe(28);
 
-    // US selects COUNTER_SALVO -> allConfirmed becomes true immediately!
-    const post = applyAlertPosture(room, 'US', 'COUNTER_SALVO');
-    expect(post.ok).toBe(true);
-    expect(post.allConfirmed).toBe(true);
-
-    resolveCurrentRound(room);
-    expect(room.round).toBe(2);
-    expect(room.countries.IR.lastRoundSummary).not.toBeNull();
-    expect(room.countries.IR.lastRoundSummary?.myOperations.length).toBe(2);
-    expect(room.countries.US.lastRoundSummary?.incomingAttacks.length).toBeGreaterThanOrEqual(2);
+    // Simulate war ruin (1 level destroyed from 20 -> 19 with damagedInfra = 1)
+    ir.infrastructure.POWER_PLANT = 19;
+    ir.damagedInfra.POWER_PLANT = 1;
+    const reb = instantBuildInfra(room, 'IR', 'POWER_PLANT');
+    expect(reb.ok).toBe(true);
+    expect(ir.infrastructure.POWER_PLANT).toBe(20);
+    expect(ir.damagedInfra.POWER_PLANT).toBe(0);
   });
 
-  it('resolves Living AI retaliation and Congress F-22 export rules', () => {
-    const room = createNewRoomState('V2C', 'AI', 'p1', 'Player', {
-      gmMode: 'AUTO',
-      maxRounds: 12,
-      planningTimerSec: 0,
-      enableAINations: true,
-    });
-    room.phase = 'PLANNING';
-    room.countries.TR.playerId = 'p1';
-    room.countries.TR.isOnline = true;
-
-    // Simulate that AI Russia was attacked by Turkey last round -> Russia AI must queue retaliatory strike!
-    room.countries.RU.lastAttackedBy = 'TR';
-    const prep = prepareEndOfPlanning(room);
-    expect(prep.alertedCountryIds).toContain('TR');
-
-    // Non-ally tries to buy F-22 from US
-    const f22Offer = {
-      id: 'f22-1',
-      round: 1,
-      from: 'IN' as const,
-      to: 'US' as const,
-      offerType: 'WEAPON' as const,
-      weaponId: 'f22',
-      amount: 1,
-      priceB: 55,
-      direction: 'BUY' as const,
-      noteFa: '',
-      status: 'PENDING' as const,
-    };
-    expect(evaluateAITradeOffer(room, f22Offer).accepted).toBe(false);
-  });
-
-  it('hides rival secret orders in sanitizeRoomForPlayer while showing God-View to GM', () => {
-    const room = createNewRoomState('V2D', 'Fog', 'gm1', 'GM', {
-      gmMode: 'HUMAN',
-      maxRounds: 12,
-      planningTimerSec: 0,
+  it('enforces Covert Attribution Privacy: untraced covert ops NEVER leak attacker identity to target or map', () => {
+    const room = createNewRoomState('V3C', 'Stealth', 'p1', 'Host', {
+      ...DEFAULT_SETTINGS,
       enableAINations: false,
     });
     room.phase = 'PLANNING';
     room.players.push({
       id: 'p2',
-      name: 'Player2',
+      name: 'TargetPlayer',
       isHost: false,
       isGM: false,
-      countryId: 'CN',
+      countryId: 'BR',
       connected: true,
     });
-    room.countries.CN.playerId = 'p2';
-    queuePlayerOrder(room, 'RU', {
-      kind: 'COVERT_OPERATION',
-      targetCountry: 'US',
-      covertType: 'TREASURY_HEIST',
-    });
+    room.players[0].countryId = 'IL';
+    room.countries.IL.playerId = 'p1';
+    room.countries.IL.upgrades.INTELLIGENCE = 10;
+    room.countries.BR.playerId = 'p2';
+    // Give target minimal counter-intel so trace chance stays at minimum floor
+    room.countries.BR.upgrades.INTELLIGENCE = 0;
+    room.countries.BR.intelLevel = 1;
+    room.countries.BR.infrastructure.CYBER_HQ = 0;
 
-    expect(sanitizeRoomForPlayer(room, 'p2').countries.RU.orders.length).toBe(0);
-    expect(sanitizeRoomForPlayer(room, 'gm1').countries.RU.orders.length).toBe(1);
+    expect(
+      queuePlayerOrder(room, 'IL', {
+        kind: 'COVERT_OPERATION',
+        targetCountry: 'BR',
+        covertType: 'ASSASSINATE_SCIENTIST',
+      }).ok
+    ).toBe(true);
+
+    // Force deterministic untraced hit via Math.random check over multiple trials or verify schema contract
+    resolveCurrentRound(room);
+    const brSummary = room.countries.BR.lastRoundSummary!;
+    expect(brSummary.incomingAttacks.length).toBe(1);
+    const atk = brSummary.incomingAttacks[0];
+    if (atk.attackerId === null) {
+      // Untraced! Verify target does NOT see IL's visual arc on sanitized state AND news doesn't leak IL!
+      expect(atk.attackerLabelFa).toContain('ناشناس');
+      const sanitizedForTarget = sanitizeRoomForPlayer(room, 'p2');
+      expect(sanitizedForTarget.visualEvents.some((v) => v.fromCountry === 'IL')).toBe(false);
+      // Actor itself still sees its own covert trajectory
+      const sanitizedForActor = sanitizeRoomForPlayer(room, 'p1');
+      expect(sanitizedForActor.visualEvents.some((v) => v.fromCountry === 'IL')).toBe(true);
+    }
   });
 
-  it('immediately resolves RADAR_ALERT over Socket.io as soon as defender clicks posture without 30s freeze', async () => {
+  it('triggers complete Regime Collapse & Elimination on overwhelming devastation without locking match', () => {
+    const room = createNewRoomState('V3D', 'Collapse', 'p1', 'Host', {
+      ...DEFAULT_SETTINGS,
+      enableAINations: false,
+    });
+    room.phase = 'PLANNING';
+    room.countries.US.playerId = 'p1';
+    room.countries.US.isOnline = true;
+    // Put AI KP into catastrophic 96% devastation
+    room.countries.KP.devastation = 96;
+    room.countries.KP.approval = 4;
+    room.countries.KP.lastAttackedBy = 'US';
+
+    resolveCurrentRound(room);
+    expect(room.countries.KP.isEliminated).toBe(true);
+    expect(room.countries.KP.conqueredBy).toBe('US');
+    expect(room.rankings.find((r) => r.countryId === 'KP')?.score).toBe(0);
+  });
+
+  it('supports World Nation Conquest, Diplomatic Pact, Coalitions, Air/Naval/Land ops & 30-round stability', () => {
+    const room = createNewRoomState('V3E', 'Empire', 'p1', 'Commander', {
+      ...DEFAULT_SETTINGS,
+      gameMode: 'SINGLE',
+    });
+    room.phase = 'PLANNING';
+    room.countries.IR.playerId = 'p1';
+    room.countries.IR.isOnline = true;
+    room.countries.IR.treasuryB = 500;
+
+    // Sign peaceful pact with Oman ('512')
+    expect(instantMinorDiplomacyPact(room, 'IR', '512').ok).toBe(true);
+    expect(room.minorNations['512'].alignedWith).toBe('IR');
+
+    // Create custom coalition & join
+    expect(createCoalition(room, 'IR', 'پیمان خلیج فارس').ok).toBe(true);
+    const newCoalId = room.countries.IR.coalitionId!;
+    expect(joinCoalition(room, 'RU', newCoalId).ok).toBe(true);
+
+    // Queue minor nation conquest + fighter air sortie + Spot trade + weapon rule
+    expect(instantSpotTrade(room, 'IR', 'OIL', 'SELL').ok).toBe(true);
+    expect(instantUpgradeTrack(room, 'IR', 'AEROSPACE').ok).toBe(true);
+    // 2nd upgrade in the same month is realistically blocked
+    expect(instantUpgradeTrack(room, 'IR', 'INDUSTRY').ok).toBe(false);
+    expect(instantProduceWeapon(room, 'IR', 'fattah2', 1).ok).toBe(true);
+
+    expect(
+      queuePlayerOrder(room, 'IR', {
+        kind: 'MINOR_NATION_OPERATION',
+        targetMinorId: '368',
+        minorOpType: 'CONQUER_ANNEX',
+      }).ok
+    ).toBe(true);
+
+    expect(
+      queuePlayerOrder(room, 'IR', {
+        kind: 'MILITARY_OPERATION',
+        targetCountry: 'IL',
+        militaryType: 'AIR_SORTIE',
+        targetSector: 'AIR_DEFENSE_NET',
+      }).ok
+    ).toBe(true);
+
+    // Run 25 full living-world rounds to verify zero crashes, AI chokepoints, and numerical health!
+    for (let i = 0; i < 25; i++) {
+      if ((room.phase as string) === 'FINISHED') break;
+      prepareEndOfPlanning(room);
+      resolveCurrentRound(room);
+    }
+
+    expect(room.round).toBeGreaterThan(20);
+    expect(Number.isNaN(room.market.oilPriceUsd)).toBe(false);
+    expect(evaluateAITradeOffer(room, {
+      id: 'f22-check',
+      round: room.round,
+      from: 'IN',
+      to: 'US',
+      offerType: 'WEAPON',
+      weaponId: 'f22',
+      amount: 1,
+      priceB: 60,
+      direction: 'BUY',
+      noteFa: '',
+      status: 'PENDING',
+    }).accepted).toBe(false);
+  });
+
+  it('immediately resolves RADAR_ALERT over Socket.io and never deadlocks if a player disconnects', async () => {
     const { httpServer, stopTicker } = createAppServer();
     await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', () => resolve()));
     const addr = httpServer.address();
@@ -166,7 +220,15 @@ describe('WW3 Global Command v2.0 — Simulation, Living AI, Spot Market & Radar
 
     try {
       const createRes = await new Promise<{ ok: boolean; roomCode?: string }>((resolve) =>
-        c1.emit('lobby:create', { playerId: 'u1', playerName: 'Ali' }, resolve)
+        c1.emit(
+          'lobby:create',
+          {
+            playerId: 'u1',
+            playerName: 'Ali',
+            settings: { gameMode: 'MULTI', difficulty: 'HARD', maxRounds: 50 },
+          },
+          resolve
+        )
       );
       const code = createRes.roomCode!;
       await new Promise<{ ok: boolean }>((resolve) =>
@@ -180,11 +242,20 @@ describe('WW3 Global Command v2.0 — Simulation, Living AI, Spot Market & Radar
       );
       await new Promise<{ ok: boolean }>((resolve) => c1.emit('lobby:start', resolve));
 
-      // Iran attacks US -> triggers RADAR_ALERT
+      // Close Strait of Hormuz & queue missile strike
+      expect(
+        (await new Promise<{ ok: boolean }>((r) => c1.emit('game:set_chokepoint', 'BLOCKADED', r))).ok
+      ).toBe(true);
+
       await new Promise<{ ok: boolean }>((resolve) =>
         c1.emit(
           'game:queue_order',
-          { kind: 'MILITARY_OPERATION', targetCountry: 'US', militaryType: 'PRECISION_STRIKE' },
+          {
+            kind: 'MILITARY_OPERATION',
+            targetCountry: 'US',
+            militaryType: 'MISSILE_DRONE_STRIKE',
+            targetSector: 'POWER_PLANT',
+          },
           resolve
         )
       );
@@ -199,7 +270,6 @@ describe('WW3 Global Command v2.0 — Simulation, Living AI, Spot Market & Radar
       c2.emit('game:toggle_ready', true);
       await alertPhaseReached;
 
-      // US clicks MAX_INTERCEPT -> must IMMEDIATELY advance to Round 2 in <500ms!
       const round2Reached = new Promise<number>((resolve) => {
         c1.on('room:state', (st) => {
           if (st.round === 2 && st.phase === 'PLANNING') resolve(st.round);

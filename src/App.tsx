@@ -20,21 +20,26 @@ import {
   ChokepointStatus,
   CountryId,
   CovertOpType,
+  DifficultyLevel,
+  EmergencyActionKind,
+  GameMode,
   GameRoomState,
   GameSettings,
   GMMode,
   InfrastructureType,
   MilitaryOpType,
+  MinorNationOpType,
+  ResolutionKind,
   StrikeTargetSector,
   TradeResourceKind,
-  UNResolution,
   UpgradeTrack,
 } from '../shared/types';
 import { CountryFlag } from './components/CountryFlag';
-import { DiplomacyChatPanel } from './components/DiplomacyChatPanel';
+import { ChatTargetSelection, DiplomacyChatPanel } from './components/DiplomacyChatPanel';
 import { GMControlPanel } from './components/GMControlPanel';
 import { LandingScreen } from './components/LandingScreen';
 import { LobbyScreen } from './components/LobbyScreen';
+import { MinorNationDrawer } from './components/MinorNationDrawer';
 import { MyCountryPanel } from './components/MyCountryPanel';
 import { NewsAndRankingsPanel } from './components/NewsAndRankingsPanel';
 import { RadarAlertModal } from './components/RadarAlertModal';
@@ -84,7 +89,8 @@ export const App: React.FC = () => {
   const [mobileTab, setMobileTab] = useState<MainTab>('MAP');
   const [desktopSideTab, setDesktopSideTab] = useState<Exclude<MainTab, 'MAP'>>('COUNTRY');
   const [drawerTarget, setDrawerTarget] = useState<{ countryId: CountryId; tab: DrawerTab } | null>(null);
-  const [activeChatTarget, setActiveChatTarget] = useState<CountryId | 'GLOBAL'>('GLOBAL');
+  const [minorDrawerId, setMinorDrawerId] = useState<string | null>(null);
+  const [activeChatTarget, setActiveChatTarget] = useState<ChatTargetSelection>('GLOBAL');
 
   const showToast = (text: string, tone: 'ok' | 'warn' = 'ok') => {
     setToast({ text, tone });
@@ -161,6 +167,8 @@ export const App: React.FC = () => {
   const handleCreateLobby = (opts: {
     playerName: string;
     roomName: string;
+    gameMode: GameMode;
+    difficulty: DifficultyLevel;
     gmMode: GMMode;
     maxRounds: number;
     planningTimerSec: number;
@@ -180,6 +188,8 @@ export const App: React.FC = () => {
         playerName: opts.playerName,
         roomName: opts.roomName,
         settings: {
+          gameMode: opts.gameMode,
+          difficulty: opts.difficulty,
           gmMode: opts.gmMode,
           maxRounds: opts.maxRounds,
           planningTimerSec: opts.planningTimerSec,
@@ -270,12 +280,17 @@ export const App: React.FC = () => {
 
   const latestBreaking = room.news[0];
   const secondsLeft = room.phaseEndsAt ? Math.max(0, Math.ceil((room.phaseEndsAt - nowMs) / 1000)) : null;
-  const humanCountries = Object.values(room.countries).filter((c) => c.playerId !== null);
-  const readyHumansCount = humanCountries.filter((c) => c.isReady).length;
+  const activeHumanCountries = Object.values(room.countries).filter(
+    (c) => c.playerId !== null && c.isOnline && !c.isEliminated
+  );
+  const readyHumansCount = activeHumanCountries.filter((c) => c.isReady).length;
   const pendingTradesForMe = room.trades.filter((t) => t.status === 'PENDING' && t.to === myCountryId).length;
-  const econ = myCountry ? computeEconomyProjection(myCountry, room.market, room.chokepoints) : null;
+  const econ = myCountry
+    ? computeEconomyProjection(myCountry, room.market, room.chokepoints, room.minorNations)
+    : null;
 
   const handleSelectCountryOnMap = (cid: CountryId) => {
+    setMinorDrawerId(null);
     if (cid === myCountryId) {
       setDrawerTarget(null);
       setMobileTab('COUNTRY');
@@ -285,12 +300,19 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleSelectMinorOnMap = (minorId: string) => {
+    setDrawerTarget(null);
+    setMinorDrawerId(minorId);
+  };
+
   const handleQueueOrder = (draft: {
-    kind: 'MILITARY_OPERATION' | 'COVERT_OPERATION';
-    targetCountry: CountryId;
+    kind: 'MILITARY_OPERATION' | 'COVERT_OPERATION' | 'MINOR_NATION_OPERATION';
+    targetCountry?: CountryId;
+    targetMinorId?: string;
     militaryType?: MilitaryOpType;
     targetSector?: StrikeTargetSector;
     covertType?: CovertOpType;
+    minorOpType?: MinorNationOpType;
   }) => {
     socketRef.current?.emit(
       'game:queue_order',
@@ -299,8 +321,9 @@ export const App: React.FC = () => {
         if (!res.ok) {
           showToast(res.errorFa || 'ثبت عملیات ممکن نشد', 'warn');
         } else {
-          showToast('🎯 عملیات با موفقیت ثبت شد و روی نقشه قفل گردید!', 'ok');
+          showToast('🎯 فرمان عملیاتی ثبت شد و مسیر آن روی نقشه قفل گردید!', 'ok');
           setDrawerTarget(null);
+          setMinorDrawerId(null);
         }
       }
     );
@@ -327,6 +350,17 @@ export const App: React.FC = () => {
     );
   };
 
+  const handleProposeResolution = (target: CountryId, kind: ResolutionKind) => {
+    socketRef.current?.emit(
+      'game:propose_un_resolution',
+      { target, kind },
+      (res?: { ok: boolean; errorFa?: string }) => {
+        if (res && !res.ok) showToast(res.errorFa || 'خطا در ثبت جلسه', 'warn');
+        else showToast('⚖️ جلسه رسمی و رای‌گیری در کمیته بین‌المللی ثبت شد!', 'ok');
+      }
+    );
+  };
+
   const defconBadgeColor =
     room.defcon === 1
       ? 'bg-rose-600 text-white animate-pulse'
@@ -347,7 +381,7 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* Cinematic End-of-Month Summary Modal! */}
+      {/* End-of-Month Summary Modal */}
       {room.phase === 'PLANNING' && myCountry?.lastRoundSummary && (
         <RoundSummaryModal
           room={room}
@@ -356,36 +390,48 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* Targeted 18-Second Emergency Radar Intercept Modal (ONLY for attacked player!) */}
-      {room.phase === 'RADAR_ALERT' && myCountry && myCountry.incomingAlertActive && !myCountry.alertPostureConfirmed && (
-        <RadarAlertModal
-          me={myCountry}
-          secondsLeft={secondsLeft ?? 18}
-          onSelectPosture={(posture: AlertPosture) => {
-            socketRef.current?.emit(
-              'game:alert_posture',
-              posture,
-              (res: { ok: boolean; errorFa?: string }) => {
-                if (!res.ok && res.errorFa) showToast(res.errorFa, 'warn');
-                else showToast('🛡️ واکنش پدافندی ثبت شد؛ در حال اجرای نبرد!', 'ok');
-              }
-            );
-          }}
-        />
-      )}
+      {/* Targeted 18s Radar Intercept Modal (ONLY for online non-eliminated attacked player) */}
+      {room.phase === 'RADAR_ALERT' &&
+        myCountry &&
+        !myCountry.isEliminated &&
+        myCountry.incomingAlertActive &&
+        !myCountry.alertPostureConfirmed && (
+          <RadarAlertModal
+            me={myCountry}
+            secondsLeft={secondsLeft ?? 18}
+            onSelectPosture={(posture: AlertPosture) => {
+              socketRef.current?.emit(
+                'game:alert_posture',
+                posture,
+                (res: { ok: boolean; errorFa?: string }) => {
+                  if (!res.ok && res.errorFa) showToast(res.errorFa, 'warn');
+                  else showToast('🛡️ فرمان پدافندی ثبت شد؛ در حال اجرای نبرد!', 'ok');
+                }
+              );
+            }}
+          />
+        )}
 
-      {/* Clear Banner for Non-Targeted Players During Radar Alert so Nobody Thinks Game Froze! */}
-      {room.phase === 'RADAR_ALERT' && (!myCountry || !myCountry.incomingAlertActive || myCountry.alertPostureConfirmed) && (
-        <div className="bg-rose-950/70 border-b border-rose-500/50 px-4 py-2 text-center text-xs sm:text-sm font-bold text-rose-200 flex items-center justify-center gap-2">
-          <Radio className="w-4 h-4 animate-ping text-rose-400" />
-          رادار کشور هدف پرتابه‌ها را شناسایی کرد! در انتظار واکنش پدافندی فرمانده هدف ({secondsLeft ?? 15} ثانیه)...
-        </div>
-      )}
+      {/* Clear Banner for Non-Targeted Players During Radar Alert */}
+      {room.phase === 'RADAR_ALERT' &&
+        (!myCountry || !myCountry.incomingAlertActive || myCountry.alertPostureConfirmed) && (
+          <div className="bg-rose-950/70 border-b border-rose-500/50 px-4 py-2 text-center text-xs sm:text-sm font-bold text-rose-200 flex items-center justify-center gap-2">
+            <Radio className="w-4 h-4 animate-ping text-rose-400" />
+            رادار کشور هدف پرتابه‌ها را شناسایی کرد! در انتظار واکنش پدافندی فرمانده هدف ({secondsLeft ?? 15} ثانیه)...
+          </div>
+        )}
 
       {/* Campaign Finished Banner */}
       {room.phase === 'FINISHED' && room.winnerSummaryFa && (
-        <div className="bg-gradient-to-l from-amber-500/25 via-emerald-500/20 to-cyan-500/25 border-b border-amber-400/50 px-4 py-3 text-center text-sm sm:text-base font-black text-amber-200">
-          🏆 {room.winnerSummaryFa}
+        <div className="bg-gradient-to-l from-amber-500/25 via-emerald-500/20 to-cyan-500/25 border-b border-amber-400/50 px-4 py-3 text-center text-sm sm:text-base font-black text-amber-200 flex flex-wrap items-center justify-center gap-3">
+          <span>🏆 {room.winnerSummaryFa}</span>
+          <button
+            type="button"
+            onClick={handleLeaveRoom}
+            className="px-3.5 py-1.5 rounded-xl bg-emerald-500 text-slate-950 text-xs font-black"
+          >
+            شروع بازی جدید
+          </button>
         </div>
       )}
 
@@ -411,7 +457,7 @@ export const App: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2">
-            {myCountry && room.phase === 'PLANNING' && (
+            {myCountry && !myCountry.isEliminated && room.phase === 'PLANNING' && (
               <button
                 type="button"
                 onClick={() => {
@@ -425,25 +471,29 @@ export const App: React.FC = () => {
                 }`}
               >
                 <CheckCircle2 className="w-4 h-4" />
-                {myCountry.isReady
-                  ? `آماده‌ام (${readyHumansCount}/${humanCountries.length})`
-                  : `پایان ماه و اجرای عملیات (${readyHumansCount}/${humanCountries.length})`}
+                {room.settings.gameMode === 'SINGLE'
+                  ? 'پایان ماه و اجرای عملیات جهان'
+                  : myCountry.isReady
+                  ? `آماده‌ام (${readyHumansCount}/${activeHumanCountries.length})`
+                  : `پایان ماه و اجرا (${readyHumansCount}/${activeHumanCountries.length})`}
               </button>
             )}
 
-            <button
-              type="button"
-              title="کپی لینک دعوت لابی"
-              onClick={() => {
-                const link = `${window.location.origin}${window.location.pathname}?room=${room.roomCode}`;
-                navigator.clipboard.writeText(link);
-                showToast(`لینک دعوت لابی (${room.roomCode}) کپی شد!`, 'ok');
-              }}
-              className="p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-300 text-xs flex items-center gap-1"
-            >
-              <Share2 className="w-4 h-4" />
-              <span className="hidden sm:inline font-mono">{room.roomCode}</span>
-            </button>
+            {room.settings.gameMode === 'MULTI' && (
+              <button
+                type="button"
+                title="کپی لینک دعوت لابی"
+                onClick={() => {
+                  const link = `${window.location.origin}${window.location.pathname}?room=${room.roomCode}`;
+                  navigator.clipboard.writeText(link);
+                  showToast(`لینک دعوت لابی (${room.roomCode}) کپی شد!`, 'ok');
+                }}
+                className="p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-300 text-xs flex items-center gap-1"
+              >
+                <Share2 className="w-4 h-4" />
+                <span className="hidden sm:inline font-mono">{room.roomCode}</span>
+              </button>
+            )}
 
             <button
               type="button"
@@ -456,7 +506,7 @@ export const App: React.FC = () => {
 
             <button
               type="button"
-              title="خروج از لابی"
+              title="خروج از بازی"
               onClick={handleLeaveRoom}
               className="p-2 rounded-xl bg-slate-800/90 hover:bg-rose-500/20 text-slate-400 hover:text-rose-300"
             >
@@ -477,7 +527,7 @@ export const App: React.FC = () => {
         )}
 
         {/* My Country Vital Resources Strip */}
-        {myCountry && econ && (
+        {myCountry && econ && !myCountry.isEliminated && (
           <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5 text-[11px]">
             <div className="px-2.5 py-1.5 rounded-xl bg-[#0b1528] border border-slate-800 flex items-center justify-between">
               <span className="text-slate-300 flex items-center gap-1.5">
@@ -504,10 +554,6 @@ export const App: React.FC = () => {
               <span className="font-mono font-bold text-cyan-300">{myCountry.gasReserve}</span>
             </div>
             <div className="px-2.5 py-1.5 rounded-xl bg-[#0b1528] border border-slate-800 flex items-center justify-between">
-              <span className="text-slate-400">🌾 غذا</span>
-              <span className="font-mono font-bold text-lime-300">{myCountry.foodReserve}</span>
-            </div>
-            <div className="px-2.5 py-1.5 rounded-xl bg-[#0b1528] border border-slate-800 flex items-center justify-between">
               <span className="text-slate-400">⚡ برق</span>
               <span className="font-mono font-bold text-yellow-300">{myCountry.powerGrid}٪</span>
             </div>
@@ -515,10 +561,20 @@ export const App: React.FC = () => {
               <span className="text-slate-400">😊 مردم</span>
               <span
                 className={`font-mono font-bold ${
-                  myCountry.approval < 45 ? 'text-rose-400' : 'text-emerald-300'
+                  myCountry.approval < 35 ? 'text-rose-400' : 'text-emerald-300'
                 }`}
               >
                 {myCountry.approval}٪
+              </span>
+            </div>
+            <div className="px-2.5 py-1.5 rounded-xl bg-[#0b1528] border border-slate-800 flex items-center justify-between">
+              <span className="text-slate-400">🔥 ویرانی</span>
+              <span
+                className={`font-mono font-bold ${
+                  myCountry.devastation >= 45 ? 'text-rose-400' : 'text-slate-300'
+                }`}
+              >
+                {myCountry.devastation}٪
               </span>
             </div>
           </div>
@@ -526,7 +582,7 @@ export const App: React.FC = () => {
       </header>
 
       {/* Main Workspace */}
-      <main className="flex-1 max-w-[1620px] w-full mx-auto p-3 sm:p-4 grid grid-cols-1 lg:grid-cols-12 gap-4">
+      <main className="flex-1 max-w-[1640px] w-full mx-auto p-3 sm:p-4 grid grid-cols-1 lg:grid-cols-12 gap-4">
         {/* Interactive World Map */}
         <div
           className={`lg:col-span-7 flex flex-col gap-3 ${
@@ -538,7 +594,9 @@ export const App: React.FC = () => {
               room={room}
               myCountryId={myCountryId}
               selectedCountryId={drawerTarget?.countryId || myCountryId}
+              selectedMinorId={minorDrawerId}
               onSelectCountry={handleSelectCountryOnMap}
+              onSelectMinorNation={handleSelectMinorOnMap}
             />
           </div>
         </div>
@@ -558,7 +616,7 @@ export const App: React.FC = () => {
                   desktopSideTab === 'COUNTRY' ? 'bg-emerald-500 text-slate-950 font-black' : 'text-slate-300'
                 }`}
               >
-                <Building2 className="w-4 h-4" /> کشور و لول‌آپ
+                <Building2 className="w-4 h-4" /> کشور و ارتقا
               </button>
             ) : (
               <button
@@ -578,7 +636,7 @@ export const App: React.FC = () => {
                 desktopSideTab === 'DIPLOMACY' ? 'bg-cyan-500 text-slate-950 font-black' : 'text-slate-300'
               }`}
             >
-              <MessageSquare className="w-4 h-4" /> دیپلماسی و چت
+              <MessageSquare className="w-4 h-4" /> ائتلاف و چت
               {pendingTradesForMe > 0 && (
                 <span className="px-1.5 py-0.2 rounded-full bg-rose-600 text-white text-[10px]">
                   {pendingTradesForMe}
@@ -592,7 +650,7 @@ export const App: React.FC = () => {
                 desktopSideTab === 'NEWS' ? 'bg-rose-500 text-white font-black' : 'text-slate-300'
               }`}
             >
-              <Tv className="w-4 h-4" /> اخبار جهان و رتبه‌ها
+              <Tv className="w-4 h-4" /> اخبار جهان، نبردها و رتبه
             </button>
           </div>
 
@@ -615,6 +673,15 @@ export const App: React.FC = () => {
                     socketRef.current?.emit(
                       'game:instant_infra',
                       infraType,
+                      (res: { ok: boolean; messageFa?: string; errorFa?: string }) => {
+                        showToast(res.messageFa || res.errorFa || '', res.ok ? 'ok' : 'warn');
+                      }
+                    )
+                  }
+                  onEmergencyAction={(kind: EmergencyActionKind) =>
+                    socketRef.current?.emit(
+                      'game:emergency_action',
+                      kind,
                       (res: { ok: boolean; messageFa?: string; errorFa?: string }) => {
                         showToast(res.messageFa || res.errorFa || '', res.ok ? 'ok' : 'warn');
                       }
@@ -689,6 +756,25 @@ export const App: React.FC = () => {
                 onVoteResolution={(resolutionId, vote) =>
                   socketRef.current?.emit('game:vote_un_resolution', { resolutionId, vote })
                 }
+                onProposeResolution={handleProposeResolution}
+                onCreateCoalition={(nameFa) =>
+                  socketRef.current?.emit(
+                    'game:create_coalition',
+                    nameFa,
+                    (res: { ok: boolean; messageFa?: string; errorFa?: string }) => {
+                      showToast(res.messageFa || res.errorFa || '', res.ok ? 'ok' : 'warn');
+                    }
+                  )
+                }
+                onJoinCoalition={(coalitionId) =>
+                  socketRef.current?.emit(
+                    'game:join_coalition',
+                    coalitionId,
+                    (res: { ok: boolean; messageFa?: string; errorFa?: string }) => {
+                      showToast(res.messageFa || res.errorFa || '', res.ok ? 'ok' : 'warn');
+                    }
+                  )
+                }
               />
             )) ||
               null}
@@ -701,7 +787,7 @@ export const App: React.FC = () => {
         </div>
       </main>
 
-      {/* Click-Any-Country Tactical Drawer */}
+      {/* Major Power Tactical Drawer */}
       {drawerTarget && (
         <TargetCountryDrawer
           room={room}
@@ -712,15 +798,39 @@ export const App: React.FC = () => {
           onQueueOrder={handleQueueOrder}
           onProposeTrade={handleProposeTrade}
           onToggleSanction={(tid) => socketRef.current?.emit('game:toggle_sanction', tid)}
-          onProposeResolution={(target: CountryId, kind: UNResolution['kind']) => {
-            socketRef.current?.emit('game:propose_un_resolution', { target, kind });
-            showToast('قطعنامه به شورای امنیت ارسال شد!', 'ok');
-          }}
+          onProposeResolution={handleProposeResolution}
           onOpenDirectChat={(tid) => {
             setActiveChatTarget(tid);
             setMobileTab('DIPLOMACY');
             setDesktopSideTab('DIPLOMACY');
           }}
+        />
+      )}
+
+      {/* World Minor Nation Conquest / Coup / Base Drawer */}
+      {minorDrawerId && (
+        <MinorNationDrawer
+          room={room}
+          myCountryId={myCountryId}
+          minorId={minorDrawerId}
+          onClose={() => setMinorDrawerId(null)}
+          onQueueMinorOrder={(mId, opType) =>
+            handleQueueOrder({
+              kind: 'MINOR_NATION_OPERATION',
+              targetMinorId: mId,
+              minorOpType: opType,
+            })
+          }
+          onInstantMinorPact={(mId) =>
+            socketRef.current?.emit(
+              'game:minor_pact',
+              mId,
+              (res: { ok: boolean; messageFa?: string; errorFa?: string }) => {
+                showToast(res.messageFa || res.errorFa || '', res.ok ? 'ok' : 'warn');
+                if (res.ok) setMinorDrawerId(null);
+              }
+            )
+          }
         />
       )}
 
@@ -746,7 +856,7 @@ export const App: React.FC = () => {
             }`}
           >
             <Building2 className="w-5 h-5" />
-            <span>کشور و لول‌آپ</span>
+            <span>کشور و ارتقا</span>
           </button>
         ) : (
           <button
@@ -769,7 +879,7 @@ export const App: React.FC = () => {
           }`}
         >
           <MessageSquare className="w-5 h-5" />
-          <span>دیپلماسی</span>
+          <span>ائتلاف و چت</span>
           {pendingTradesForMe > 0 && (
             <span className="absolute top-1 left-6 w-4 h-4 rounded-full bg-rose-600 text-white text-[10px] flex items-center justify-center">
               {pendingTradesForMe}

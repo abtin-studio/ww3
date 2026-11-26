@@ -5,19 +5,24 @@ import fs from 'node:fs';
 import { createServer } from 'node:http';
 import path from 'node:path';
 import { Server, Socket } from 'socket.io';
-import { evaluateAITradeOffer } from './aiNations.js';
+import { evaluateAITradeOffer, generateAIDiplomaticReply } from './aiNations.js';
 import {
   addIntel,
   addNews,
   applyAlertPosture,
   cancelPlayerOrder,
+  createCoalition,
   createNewRoomState,
+  createResolutionSpec,
   executeAcceptedTrade,
   instantBuildInfra,
+  instantEmergencyAction,
+  instantMinorDiplomacyPact,
   instantProduceWeapon,
   instantSetChokepoint,
   instantSpotTrade,
   instantUpgradeTrack,
+  joinCoalition,
   prepareEndOfPlanning,
   queuePlayerOrder,
   resolveCurrentRound,
@@ -30,14 +35,18 @@ import {
   ChokepointStatus,
   CountryId,
   CovertOpType,
+  DifficultyLevel,
+  EmergencyActionKind,
+  GameMode,
   GameRoomState,
   GameSettings,
   InfrastructureType,
   MilitaryOpType,
+  MinorNationOpType,
+  ResolutionKind,
   StrikeTargetSector,
   TradeOffer,
   TradeResourceKind,
-  UNResolution,
   UpgradeTrack,
 } from '../shared/types.js';
 
@@ -52,6 +61,10 @@ function makeRoomCode(): string {
 
 function uid(prefix: string): string {
   return `${prefix}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
 }
 
 export function createAppServer() {
@@ -90,7 +103,6 @@ export function createAppServer() {
       if (!sock || !sess) continue;
       const p = room.players.find((x) => x.id === sess.playerId);
       if (p?.countryId && alertedCountryIds.includes(p.countryId)) {
-        // ONLY the player actually under incoming missile/air attack hears the siren!
         sock.emit('room:sound', { type: 'RADAR_SIREN' });
       } else {
         sock.emit('room:sound', { type: 'TACTICAL_PING' });
@@ -126,16 +138,16 @@ export function createAppServer() {
 
   function checkAllHumansReady(room: GameRoomState): void {
     if (room.phase !== 'PLANNING') return;
-    const humanCountries = Object.values(room.countries).filter(
-      (c) => c.playerId !== null && !c.isEliminated
+    const activeOnlineHumanCountries = Object.values(room.countries).filter(
+      (c) => c.playerId !== null && c.isOnline && !c.isEliminated
     );
-    if (humanCountries.length > 0 && humanCountries.every((c) => c.isReady)) {
+    if (activeOnlineHumanCountries.length > 0 && activeOnlineHumanCountries.every((c) => c.isReady)) {
       advanceFromPlanning(room);
     }
   }
 
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, version: '2.0.0', uptime: process.uptime() });
+    res.json({ ok: true, version: '3.0.0', uptime: process.uptime() });
   });
 
   io.on('connection', (socket: Socket) => {
@@ -155,17 +167,29 @@ export function createAppServer() {
         let code = makeRoomCode();
         while (store.get(code)) code = makeRoomCode();
 
+        const gameMode: GameMode = payload.settings?.gameMode === 'SINGLE' ? 'SINGLE' : 'MULTI';
+        const difficulty: DifficultyLevel =
+          payload.settings?.difficulty === 'EXTREME'
+            ? 'EXTREME'
+            : payload.settings?.difficulty === 'HARD'
+            ? 'HARD'
+            : 'NORMAL';
+
         const settings: GameSettings = {
-          gmMode: payload.settings?.gmMode === 'HUMAN' ? 'HUMAN' : 'AUTO',
-          maxRounds: payload.settings?.maxRounds || 12,
+          gameMode,
+          difficulty,
+          gmMode: gameMode === 'SINGLE' ? 'AUTO' : payload.settings?.gmMode === 'HUMAN' ? 'HUMAN' : 'AUTO',
+          maxRounds: clamp(Math.round(payload.settings?.maxRounds || 24), 6, 200),
           planningTimerSec:
-            payload.settings?.planningTimerSec !== undefined ? payload.settings.planningTimerSec : 0,
+            payload.settings?.planningTimerSec && payload.settings.planningTimerSec > 0
+              ? clamp(Math.round(payload.settings.planningTimerSec), 45, 1200)
+              : 0,
           enableAINations: payload.settings?.enableAINations ?? true,
         };
 
         const room = createNewRoomState(
           code,
-          (payload.roomName || `اتاق جنگ ${playerName}`).slice(0, 36),
+          (payload.roomName || (gameMode === 'SINGLE' ? `کارزار تک‌نفره ${playerName}` : `اتاق جنگ ${playerName}`)).slice(0, 36),
           playerId,
           playerName,
           settings
@@ -197,6 +221,10 @@ export function createAppServer() {
 
         let existing = room.players.find((p) => p.id === playerId);
         if (!existing) {
+          if (room.settings.gameMode === 'SINGLE' && room.players.length >= 1) {
+            cb?.({ ok: false, errorFa: 'این لابی در حالت تک‌نفره ساخته شده است.' });
+            return;
+          }
           existing = {
             id: playerId,
             name: playerName,
@@ -288,14 +316,21 @@ export function createAppServer() {
       const player = room.players.find((p) => p.id === sess.playerId);
       if (!player?.isHost) return;
 
+      if (partial.gameMode) room.settings.gameMode = partial.gameMode;
+      if (partial.difficulty) room.settings.difficulty = partial.difficulty;
       if (partial.gmMode) {
         room.settings.gmMode = partial.gmMode;
         if (partial.gmMode === 'AUTO') {
           for (const p of room.players) p.isGM = false;
         }
       }
-      if (partial.maxRounds) room.settings.maxRounds = partial.maxRounds;
-      if (partial.planningTimerSec !== undefined) room.settings.planningTimerSec = partial.planningTimerSec;
+      if (partial.maxRounds !== undefined) {
+        room.settings.maxRounds = clamp(Math.round(partial.maxRounds), 6, 200);
+      }
+      if (partial.planningTimerSec !== undefined) {
+        room.settings.planningTimerSec =
+          partial.planningTimerSec > 0 ? clamp(Math.round(partial.planningTimerSec), 45, 1200) : 0;
+      }
       if (partial.enableAINations !== undefined) room.settings.enableAINations = partial.enableAINations;
       broadcastRoom(room);
     });
@@ -325,7 +360,7 @@ export function createAppServer() {
       cb?.({ ok: true });
     });
 
-    // === INSTANT ACTIONS (Level-Ups, Infrastructures, Weapons, 1-Click Oil Spot Market!) ===
+    // === INSTANT ACTIONS ===
     socket.on(
       'game:instant_upgrade',
       (track: UpgradeTrack, cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void) => {
@@ -349,6 +384,20 @@ export function createAppServer() {
         const player = room?.players.find((p) => p.id === sess.playerId);
         if (!room || !player?.countryId) return;
         const res = instantBuildInfra(room, player.countryId, infraType);
+        if (res.ok) broadcastRoom(room);
+        cb?.(res);
+      }
+    );
+
+    socket.on(
+      'game:emergency_action',
+      (kind: EmergencyActionKind, cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void) => {
+        const sess = socketSession.get(socket.id);
+        if (!sess) return;
+        const room = store.get(sess.roomCode);
+        const player = room?.players.find((p) => p.id === sess.playerId);
+        if (!room || !player?.countryId) return;
+        const res = instantEmergencyAction(room, player.countryId, kind);
         if (res.ok) broadcastRoom(room);
         cb?.(res);
       }
@@ -395,7 +444,7 @@ export function createAppServer() {
       const player = room?.players.find((p) => p.id === sess.playerId);
       if (!room || !player?.countryId) return;
       const c = room.countries[player.countryId];
-      if (c) {
+      if (c && !c.isEliminated) {
         c.autoSellSurplus = !c.autoSellSurplus;
         broadcastRoom(room);
       }
@@ -415,16 +464,61 @@ export function createAppServer() {
       }
     );
 
-    // === STRATEGIC QUEUED OPERATIONS ===
+    socket.on(
+      'game:minor_pact',
+      (minorId: string, cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void) => {
+        const sess = socketSession.get(socket.id);
+        if (!sess) return;
+        const room = store.get(sess.roomCode);
+        const player = room?.players.find((p) => p.id === sess.playerId);
+        if (!room || !player?.countryId) return;
+        const res = instantMinorDiplomacyPact(room, player.countryId, minorId);
+        if (res.ok) broadcastRoom(room);
+        cb?.(res);
+      }
+    );
+
+    // === COALITIONS ===
+    socket.on(
+      'game:create_coalition',
+      (nameFa: string, cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void) => {
+        const sess = socketSession.get(socket.id);
+        if (!sess) return;
+        const room = store.get(sess.roomCode);
+        const player = room?.players.find((p) => p.id === sess.playerId);
+        if (!room || !player?.countryId) return;
+        const res = createCoalition(room, player.countryId, nameFa);
+        if (res.ok) broadcastRoom(room);
+        cb?.(res);
+      }
+    );
+
+    socket.on(
+      'game:join_coalition',
+      (coalitionId: string, cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void) => {
+        const sess = socketSession.get(socket.id);
+        if (!sess) return;
+        const room = store.get(sess.roomCode);
+        const player = room?.players.find((p) => p.id === sess.playerId);
+        if (!room || !player?.countryId) return;
+        const res = joinCoalition(room, player.countryId, coalitionId);
+        if (res.ok) broadcastRoom(room);
+        cb?.(res);
+      }
+    );
+
+    // === QUEUED STRATEGIC & CONQUEST OPERATIONS ===
     socket.on(
       'game:queue_order',
       (
         draft: {
-          kind: 'MILITARY_OPERATION' | 'COVERT_OPERATION';
-          targetCountry: CountryId;
+          kind: 'MILITARY_OPERATION' | 'COVERT_OPERATION' | 'MINOR_NATION_OPERATION';
+          targetCountry?: CountryId;
+          targetMinorId?: string;
           militaryType?: MilitaryOpType;
           targetSector?: StrikeTargetSector;
           covertType?: CovertOpType;
+          minorOpType?: MinorNationOpType;
         },
         cb?: (res: { ok: boolean; errorFa?: string }) => void
       ) => {
@@ -459,13 +553,12 @@ export function createAppServer() {
       if (!player?.countryId) return;
 
       const c = room.countries[player.countryId];
-      if (!c) return;
+      if (!c || c.isEliminated) return;
       c.isReady = ready;
       broadcastRoom(room);
       if (ready) checkAllHumansReady(room);
     });
 
-    // BUG-FREE RADAR ALERT: Immediately advances round once all alerted defenders pick their defense!
     socket.on(
       'game:alert_posture',
       (posture: AlertPosture, cb?: (res: { ok: boolean; errorFa?: string }) => void) => {
@@ -499,33 +592,71 @@ export function createAppServer() {
       socket.emit('room:state', sanitizeRoomForPlayer(room, player.id));
     });
 
+    // === DIPLOMATIC CHAT (WITH LIVE AI FOREIGN MINISTRY REPLIES!) ===
     socket.on(
       'game:send_chat',
-      (payload: { channel: 'GLOBAL' | 'DIRECT' | 'GM_WHISPER'; toCountry?: CountryId; text: string }) => {
+      (payload: {
+        channel: 'GLOBAL' | 'COALITION' | 'DIRECT' | 'GM_WHISPER';
+        toCountry?: CountryId;
+        text: string;
+      }) => {
         const sess = socketSession.get(socket.id);
         if (!sess) return;
         const room = store.get(sess.roomCode);
         const player = room?.players.find((p) => p.id === sess.playerId);
         if (!room || !player) return;
-        const cleanText = (payload.text || '').trim().slice(0, 350);
+        const cleanText = (payload.text || '').trim().slice(0, 380);
         if (!cleanText) return;
 
         const fromCountry: CountryId | 'GM' = player.isGM ? 'GM' : player.countryId!;
         if (!fromCountry) return;
 
+        const senderCountryObj = fromCountry !== 'GM' ? room.countries[fromCountry] : null;
+        const effectiveChannel =
+          player.isGM && payload.toCountry ? 'GM_WHISPER' : payload.channel;
+
         room.messages.push({
           id: uid('msg'),
           timestamp: Date.now(),
-          channel: player.isGM && payload.toCountry ? 'GM_WHISPER' : payload.channel,
+          channel: effectiveChannel,
+          coalitionId: effectiveChannel === 'COALITION' ? senderCountryObj?.coalitionId || undefined : undefined,
           fromCountry,
           fromName: player.isGM
             ? '🎙️ راوی کل جهان'
-            : room.countries[fromCountry as CountryId].nameFa,
+            : `${senderCountryObj?.nameFa || ''}${player.name ? ` (${player.name})` : ''}`,
           toCountry: payload.toCountry,
           text: cleanText,
         });
-        if (room.messages.length > 120) room.messages.shift();
+        if (room.messages.length > 140) room.messages.shift();
         broadcastRoom(room);
+
+        // If a human sends a DIRECT cable to an AI-controlled country, AI diplomat replies smartly!
+        if (
+          effectiveChannel === 'DIRECT' &&
+          payload.toCountry &&
+          senderCountryObj &&
+          room.countries[payload.toCountry] &&
+          room.countries[payload.toCountry].playerId === null &&
+          !room.countries[payload.toCountry].isEliminated
+        ) {
+          const targetAI = room.countries[payload.toCountry];
+          setTimeout(() => {
+            const latestRoom = store.get(room.roomCode);
+            if (!latestRoom || targetAI.isEliminated) return;
+            const replyText = generateAIDiplomaticReply(latestRoom, targetAI, senderCountryObj, cleanText);
+            latestRoom.messages.push({
+              id: uid('ai-reply'),
+              timestamp: Date.now(),
+              channel: 'DIRECT',
+              fromCountry: targetAI.id,
+              fromName: `${targetAI.nameFa} (وزارت خارجه)`,
+              toCountry: senderCountryObj.id,
+              text: replyText,
+            });
+            if (latestRoom.messages.length > 140) latestRoom.messages.shift();
+            broadcastRoom(latestRoom);
+          }, 650);
+        }
       }
     );
 
@@ -564,7 +695,7 @@ export function createAppServer() {
         };
 
         const targetCountry = room.countries[payload.to];
-        if (!targetCountry) return;
+        if (!targetCountry || targetCountry.isEliminated) return;
 
         if (targetCountry.playerId === null) {
           const decision = evaluateAITradeOffer(room, offer);
@@ -594,12 +725,12 @@ export function createAppServer() {
         }
 
         room.trades.unshift(offer);
-        if (room.trades.length > 40) room.trades.length = 40;
+        if (room.trades.length > 50) room.trades.length = 50;
         broadcastRoom(room);
         cb?.({
           ok: true,
           status: 'PENDING',
-          messageFa: `قرارداد برای ${targetCountry.nameFa} ارسال شد.`,
+          messageFa: `پیشنهاد رسمی برای ${targetCountry.nameFa} ارسال شد.`,
         });
       }
     );
@@ -649,7 +780,7 @@ export function createAppServer() {
 
       const actor = room.countries[player.countryId];
       const target = room.countries[targetId];
-      if (!actor || !target) return;
+      if (!actor || !target || actor.isEliminated || target.isEliminated) return;
 
       if (target.sanctionedBy.includes(actor.id)) {
         target.sanctionedBy = target.sanctionedBy.filter((id) => id !== actor.id);
@@ -662,7 +793,7 @@ export function createAppServer() {
           category: 'ECONOMY',
           breaking: false,
           headlineFa: `${actor.nameFa} تحریم‌های اقتصادی علیه ${target.nameFa} وضع کرد`,
-          bodyFa: 'فشار بانکی و تجاری علیه کشور هدف افزایش یافت.',
+          bodyFa: 'فشارهای بانکی و تجاری علیه کشور هدف افزایش یافت.',
           involvedCountries: [actor.id, target.id],
         });
       }
@@ -670,9 +801,13 @@ export function createAppServer() {
       broadcastRoom(room);
     });
 
+    // === UN SECURITY COUNCIL & SPECIAL SUMMIT COMMITTEES ===
     socket.on(
       'game:propose_un_resolution',
-      (payload: { target: CountryId; kind: UNResolution['kind'] }) => {
+      (
+        payload: { target: CountryId; kind: ResolutionKind },
+        cb?: (res: { ok: boolean; errorFa?: string }) => void
+      ) => {
         const sess = socketSession.get(socket.id);
         if (!sess) return;
         const room = store.get(sess.roomCode);
@@ -681,28 +816,30 @@ export function createAppServer() {
 
         const proposer = room.countries[player.countryId];
         const target = room.countries[payload.target];
-        if (!proposer || !target) return;
+        if (!proposer || !target || proposer.isEliminated) return;
 
-        const titleFa =
-          payload.kind === 'GLOBAL_SANCTION'
-            ? `قطعنامه تحریم اقتصادی جهانی علیه ${target.nameFa}`
-            : payload.kind === 'CEASEFIRE_DEMAND'
-            ? `قطعنامه آتش‌بس فوری با محوریت ${target.nameFa}`
-            : `قطعنامه محکومیت نظامی ${target.nameFa}`;
+        if (room.resolutions.filter((r) => r.status === 'ACTIVE').length >= 3) {
+          cb?.({ ok: false, errorFa: 'حداکثر ۳ جلسه/قطعنامه همزمان در هر ماه قابل طرح است.' });
+          return;
+        }
 
+        const spec = createResolutionSpec(proposer, target, payload.kind);
         room.resolutions.unshift({
           id: uid('un'),
           round: room.round,
           proposer: proposer.id,
           target: target.id,
           kind: payload.kind,
-          titleFa,
+          committeeFa: spec.committeeFa,
+          titleFa: spec.titleFa,
+          effectSummaryFa: spec.effectSummaryFa,
           votesYes: [proposer.id],
           votesNo: [],
           vetoedBy: null,
           status: 'ACTIVE',
         });
         broadcastRoom(room);
+        cb?.({ ok: true });
       }
     );
 
@@ -717,12 +854,16 @@ export function createAppServer() {
 
         const c = room.countries[player.countryId];
         const res = room.resolutions.find((r) => r.id === payload.resolutionId && r.status === 'ACTIVE');
-        if (!c || !res) return;
+        if (!c || c.isEliminated || !res) return;
 
         res.votesYes = res.votesYes.filter((id) => id !== c.id);
         res.votesNo = res.votesNo.filter((id) => id !== c.id);
 
-        if (payload.vote === 'VETO' && c.isUNVetoMember) {
+        const vetoAllowed =
+          c.isUNVetoMember &&
+          (res.kind === 'GLOBAL_SANCTION' || res.kind === 'CONDEMN_AGGRESSION' || res.kind === 'IAEA_INSPECTION');
+
+        if (payload.vote === 'VETO' && vetoAllowed) {
           res.votesNo.push(c.id);
           res.vetoedBy = c.id;
           res.status = 'VETOED';
@@ -750,7 +891,7 @@ export function createAppServer() {
           category: 'GM',
           breaking: Boolean(payload.breaking),
           headlineFa: (payload.headlineFa || '').slice(0, 180),
-          bodyFa: (payload.bodyFa || '').slice(0, 350),
+          bodyFa: (payload.bodyFa || '').slice(0, 380),
           involvedCountries: [],
         });
         if (payload.breaking) io.to(room.roomCode).emit('room:sound', { type: 'GM_CHIME' });
@@ -772,7 +913,7 @@ export function createAppServer() {
 
         const target = payload.targetCountry ? room.countries[payload.targetCountry] : null;
         if (payload.preset === 'GLOBAL_OIL_SHOCK') {
-          room.market.oilPriceUsd = Math.min(220, room.market.oilPriceUsd + 32);
+          room.market.oilPriceUsd = Math.min(240, room.market.oilPriceUsd + 32);
           room.market.globalTension = Math.min(100, room.market.globalTension + 12);
           addNews(room, {
             agencyFa: 'بلومبرگ فوری',
@@ -785,13 +926,13 @@ export function createAppServer() {
         } else if (payload.preset === 'CALM_MARKETS') {
           room.market.oilPriceUsd = Math.max(65, room.market.oilPriceUsd - 20);
           room.market.globalTension = Math.max(10, room.market.globalTension - 15);
-        } else if (target) {
+        } else if (target && !target.isEliminated) {
           if (payload.preset === 'OIL_BOOM') {
             target.oilReserve += 120;
             target.treasuryB += 50;
           } else if (payload.preset === 'EARTHQUAKE') {
             target.powerGrid = Math.max(20, target.powerGrid - 24);
-            target.treasuryB = Math.max(10, target.treasuryB - 30);
+            target.devastation = Math.min(100, target.devastation + 18);
           } else if (payload.preset === 'MASS_PROTEST') {
             target.approval = Math.max(12, target.approval - 18);
           } else if (payload.preset === 'MILITARY_AID') {
@@ -823,7 +964,7 @@ export function createAppServer() {
         if (!c) return;
 
         if (payload.treasuryDelta) c.treasuryB = Math.max(0, c.treasuryB + payload.treasuryDelta);
-        if (payload.approvalDelta) c.approval = Math.max(0, Math.min(100, c.approval + payload.approvalDelta));
+        if (payload.approvalDelta) c.approval = clamp(c.approval + payload.approvalDelta, 0, 100);
         if (payload.oilDelta) c.oilReserve = Math.max(0, c.oilReserve + payload.oilDelta);
         if (payload.warheadsDelta) c.warheads = Math.max(0, c.warheads + payload.warheadsDelta);
 
@@ -859,6 +1000,21 @@ export function createAppServer() {
         player.connected = false;
         if (player.countryId && room.countries[player.countryId]) {
           room.countries[player.countryId].isOnline = false;
+        }
+        // Ensure a disconnected player NEVER deadlocks Planning, Radar Alert, or GM Review!
+        if (room.phase === 'PLANNING') {
+          checkAllHumansReady(room);
+        } else if (room.phase === 'RADAR_ALERT') {
+          const remainingAlerted = Object.values(room.countries).filter(
+            (x) => x.incomingAlertActive && !x.isEliminated && x.playerId !== null && x.isOnline && !x.alertPostureConfirmed
+          );
+          if (remainingAlerted.length === 0) {
+            finalizeRoundAfterAlert(room);
+            return;
+          }
+        } else if (room.phase === 'GM_REVIEW' && player.isGM) {
+          resolveCurrentRound(room);
+          io.to(room.roomCode).emit('room:sound', { type: 'ROUND_RESOLVED', defcon: room.defcon });
         }
         broadcastRoom(room);
       }
@@ -905,6 +1061,6 @@ if (isDirectRun) {
   const PORT = Number(process.env.PORT) || 3001;
   const { httpServer } = createAppServer();
   httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`🌍 WW3 Global Command v2.0 online on http://localhost:${PORT}`);
+    console.log(`🌍 WW3 Global Command v3.0 online on http://localhost:${PORT}`);
   });
 }

@@ -6,44 +6,31 @@
   html,
   body {
     font-family: 'Vazirmatn', system-ui, -apple-system, sans-serif;
-    background-color: #050911;
+    background-color: #040811;
     color: #f1f5f9;
   }
 }
 
 .tactical-grid-bg {
-  background-image: radial-gradient(circle at 50% 0%, rgba(16, 185, 129, 0.09), transparent 55%),
+  background-image: radial-gradient(circle at 50% 0%, rgba(16, 185, 129, 0.11), transparent 56%),
+    radial-gradient(circle at 85% 90%, rgba(14, 165, 233, 0.08), transparent 45%),
     linear-gradient(to right, rgba(30, 47, 77, 0.22) 1px, transparent 1px),
     linear-gradient(to bottom, rgba(30, 47, 77, 0.22) 1px, transparent 1px);
-  background-size: 100% 100%, 36px 36px, 36px 36px;
+  background-size: 100% 100%, 100% 100%, 36px 36px, 36px 36px;
 }
 
 @keyframes dashFlow {
+  from {
+    stroke-dashoffset: 24;
+  }
   to {
-    stroke-dashoffset: -28;
+    stroke-dashoffset: 0;
   }
 }
 
 .animate-flight-arc {
   stroke-dasharray: 7 5;
-  animation: dashFlow 1.1s linear infinite;
-}
-
-@keyframes pulseRing {
-  0% {
-    transform: scale(0.85);
-    opacity: 0.85;
-  }
-  100% {
-    transform: scale(2.3);
-    opacity: 0;
-  }
-}
-
-.radar-ping-ring {
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: pulseRing 2.2s ease-out infinite;
+  animation: dashFlow 1.25s linear infinite;
 }
 
 /* Clean custom scrollbars */
