@@ -39,7 +39,6 @@ const WorldMapInner: React.FC<WorldMapProps> = ({
 }) => {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-  // Default to 'RELEVANT' so 20 AI arcs never clutter the map! (Item #8)
   const [arcMode, setArcMode] = useState<ArcFilterMode>('RELEVANT');
   const [showLabels, setShowLabels] = useState(true);
   const [hoveredInfo, setHoveredInfo] = useState<{
@@ -325,14 +324,14 @@ const WorldMapInner: React.FC<WorldMapProps> = ({
 
   return (
     <div className="relative w-full h-full min-h-[370px] sm:min-h-[480px] glass-panel rounded-2xl overflow-hidden select-none">
-      {/* Top Right Layer Filter Bar (Anti-Clutter Item #8!) */}
+      {/* Top Right Layer Filter Bar */}
       <div className="absolute top-3 right-3 z-10 flex flex-wrap items-center gap-1.5">
         <div className="p-1 rounded-xl bg-[#060f1f]/90 border border-slate-700/80 backdrop-blur-md flex items-center gap-1 text-[11px] font-bold">
           {(
             [
               ['RELEVANT', '🎯 فقط مرتبط با من'],
               ['ALL', '🌍 کل عملیات جهان'],
-              ['NONE', '🏴 نمای تصرفات'],
+              ['NONE', '🗺️ نمای سیاسی خالص'],
             ] as [ArcFilterMode, string][]
           ).map(([mode, lbl]) => (
             <button
@@ -356,8 +355,8 @@ const WorldMapInner: React.FC<WorldMapProps> = ({
 
       {/* Live Hover Country Intel Pill */}
       {hoveredInfo && (
-        <div className="absolute top-14 right-3 z-10 px-3.5 py-2 rounded-xl bg-[#081326]/95 border border-cyan-500/40 shadow-xl backdrop-blur-md pointer-events-none max-w-xs">
-          <div className="flex items-center gap-2">
+        <div className="absolute top-14 right-3 z-10 px-3.5 py-2 rounded-xl bg-[#071225]/95 border border-cyan-500/40 shadow-xl backdrop-blur-md pointer-events-none max-w-xs animate-panel-in">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="font-black text-xs text-white">{hoveredInfo.nameFa}</span>
             <span className="px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 text-[10px] font-bold">
               {hoveredInfo.tagFa}
@@ -424,25 +423,25 @@ const WorldMapInner: React.FC<WorldMapProps> = ({
         </button>
       </div>
 
-      {/* Bottom Legend & Hint */}
+      {/* Clean Minimal Legend */}
       <div className="absolute bottom-2.5 inset-x-3 z-10 flex items-center justify-between pointer-events-none gap-2">
         <div className="px-3 py-1 rounded-full bg-[#060f1f]/90 border border-slate-800 text-[10px] sm:text-[11px] text-slate-300 flex items-center gap-3 backdrop-blur-md">
           <span className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" /> شما
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" /> قلمرو شما
           </span>
           <span className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full bg-cyan-400 inline-block" /> متحد
+            <span className="w-2.5 h-2.5 rounded-full bg-cyan-500 inline-block" /> متحد
           </span>
           <span className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full bg-amber-400 inline-block" /> بازیکن رقیب
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block" /> رقیب انسانی
           </span>
           <span className="hidden sm:inline text-slate-400">
-            • هاشور مورب = اشغال نظامی در جریان نبرد
+            • هم‌رنگ شدن مرزها = قلمرو ضمیمه‌شده به امپراتوری
           </span>
         </div>
         {(renderedArcs.length > 0 || myPendingOrders.length > 0) && (
           <div className="hidden sm:block px-3 py-1 rounded-full bg-rose-500/15 border border-rose-500/35 text-[11px] text-rose-200 font-bold">
-            ⚡ {renderedArcs.length} مسیر نمایش‌داده‌شده
+            ⚡ {renderedArcs.length} مسیر فعال
           </div>
         )}
       </div>
@@ -460,52 +459,38 @@ const WorldMapInner: React.FC<WorldMapProps> = ({
         }}
       >
         <defs>
-          <radialGradient id="oceanGlowV4" cx="50%" cy="48%" r="65%">
-            <stop offset="0%" stopColor="#091a36" />
-            <stop offset="100%" stopColor="#02060f" />
+          <radialGradient id="oceanGlowV5" cx="50%" cy="48%" r="65%">
+            <stop offset="0%" stopColor="#081832" />
+            <stop offset="100%" stopColor="#02060e" />
           </radialGradient>
 
-          {/* Diagonal Occupation Hatching Patterns for each Empire Color (Item #19!) */}
+          {/* Silky Smooth Frontline Gradient for Partially Contested Countries (Zero Ugly Stripes!) */}
           {ALL_COUNTRY_IDS.map((cid) => (
-            <pattern
-              key={`occ-pat-${cid}`}
-              id={`occ-pat-${cid}`}
-              width="6"
-              height="6"
-              patternTransform="rotate(45 0 0)"
-              patternUnits="userSpaceOnUse"
-            >
-              <rect width="6" height="6" fill="#0e1b31" />
-              <line
-                x1="0"
-                y1="0"
-                x2="0"
-                y2="6"
-                stroke={EMPIRE_COLORS[cid]}
-                strokeWidth="3.2"
-                strokeOpacity="0.88"
-              />
-            </pattern>
+            <linearGradient key={`front-grad-${cid}`} id={`front-grad-${cid}`} x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#12233f" stopOpacity="0.95" />
+              <stop offset="55%" stopColor="#152847" stopOpacity="0.9" />
+              <stop offset="100%" stopColor={EMPIRE_COLORS[cid]} stopOpacity="0.62" />
+            </linearGradient>
           ))}
         </defs>
 
-        <rect width={MAP_W} height={MAP_H} fill="#02060f" />
+        <rect width={MAP_W} height={MAP_H} fill="#02060e" />
 
         <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
           {spherePath && (
-            <path d={spherePath} fill="url(#oceanGlowV4)" stroke="#172a4a" strokeWidth={0.8 * invScale} />
+            <path d={spherePath} fill="url(#oceanGlowV5)" stroke="#162947" strokeWidth={0.8 * invScale} />
           )}
           {graticulePath && (
             <path
               d={graticulePath}
               fill="none"
-              stroke="#132542"
-              strokeWidth={0.35 * invScale}
-              strokeOpacity={0.5}
+              stroke="#12233e"
+              strokeWidth={0.32 * invScale}
+              strokeOpacity={0.45}
             />
           )}
 
-          {/* ALL 195 World Country Polygons */}
+          {/* ALL 195 World Country Polygons — Clean Velvet Sovereign Shading */}
           {features.map((f, idx) => {
             if (!f.d) return null;
             const gameCountry = isoMajorMap.get(f.iso);
@@ -526,45 +511,58 @@ const WorldMapInner: React.FC<WorldMapProps> = ({
 
               const fill = isSelectedMinor
                 ? '#0284c7'
-                : occupier
-                ? `url(#occ-pat-${occupier.id})`
                 : isMyConquest
-                ? '#047857'
+                ? '#059669'
                 : conqueror
                 ? EMPIRE_COLORS[conqueror.id]
+                : occupier
+                ? `url(#front-grad-${occupier.id})`
                 : isMyProtectorate
                 ? '#0f4c5c'
-                : '#0e1c33';
+                : protector
+                ? '#142c4c'
+                : '#0e1b30';
+
+              const fillOpacity = isSelectedMinor
+                ? 0.92
+                : isMyConquest
+                ? 0.68
+                : conqueror
+                ? 0.56
+                : 0.92;
 
               const stroke = isSelectedMinor
                 ? '#7dd3fc'
+                : isMyConquest
+                ? '#34d399'
+                : conqueror
+                ? EMPIRE_COLORS[conqueror.id]
                 : occupier
                 ? EMPIRE_COLORS[occupier.id]
-                : conqueror
-                ? '#e2e8f0'
-                : '#1c3358';
+                : '#1b3154';
 
               return (
                 <path
                   key={`mnr-${f.iso}-${idx}`}
                   d={f.d}
                   fill={fill}
-                  fillOpacity={conqueror ? 0.72 : 0.92}
+                  fillOpacity={fillOpacity}
                   stroke={stroke}
-                  strokeWidth={(isSelectedMinor || occupier ? 1.1 : 0.5) * invScale}
+                  strokeWidth={(isSelectedMinor ? 1.15 : conqueror || occupier ? 0.7 : 0.46) * invScale}
+                  strokeDasharray={occupier ? `${2.2 * invScale} ${1.4 * invScale}` : undefined}
                   className={minorCountry ? 'cursor-pointer transition-opacity duration-150 hover:opacity-100' : ''}
                   onMouseEnter={() => {
                     if (!minorCountry) return;
                     setHoveredInfo({
                       nameFa: minorCountry.nameFa,
                       tagFa: conqueror
-                        ? `ضمیمه کامل ${conqueror.nameFa}`
+                        ? `🏴 قلمرو ${conqueror.nameFa}`
                         : occupier
-                        ? `⚔️ ${minorCountry.occupationPct}٪ در اشغال ${occupier.nameFa}`
+                        ? `⚔️ خط مقدم نبرد (${minorCountry.occupationPct}٪ پیشروی ${occupier.nameFa})`
                         : protector
-                        ? `هم‌پیمان ${protector.nameFa}`
+                        ? `🤝 هم‌پیمان ${protector.nameFa}`
                         : 'کشور مستقل',
-                      subtitleFa: `اقتصاد: $${minorCountry.gdpB}B • نفت: +${minorCountry.oilBonus} • پادگان دفاعی: ${minorCountry.garrisonPower}`,
+                      subtitleFa: `اقتصاد: $${minorCountry.gdpB}B • نفت: +${minorCountry.oilBonus} • ارتش مدافع: ${minorCountry.garrisonPower}`,
                     });
                   }}
                   onClick={(e) => {
@@ -576,7 +574,9 @@ const WorldMapInner: React.FC<WorldMapProps> = ({
 
             const isMine = gameCountry.id === myCountryId;
             const isSelected = gameCountry.id === selectedCountryId;
-            const isAlly = Boolean(myCountry?.allies.includes(gameCountry.id));
+            const isAlly = Boolean(
+              myCountry?.allies.includes(gameCountry.id) || myCountry?.secretAllies?.includes(gameCountry.id)
+            );
             const isHumanOther = Boolean(gameCountry.playerId && !isMine);
             const conquerorOfMajor = gameCountry.conqueredBy ? room.countries[gameCountry.conqueredBy] : null;
             const partialInvader =
@@ -588,49 +588,53 @@ const WorldMapInner: React.FC<WorldMapProps> = ({
               ? conquerorOfMajor
                 ? EMPIRE_COLORS[conquerorOfMajor.id]
                 : '#27272a'
-              : partialInvader && !isSelected
-              ? `url(#occ-pat-${partialInvader.id})`
-              : isMine
-              ? '#059669'
               : isSelected
               ? '#0284c7'
+              : partialInvader
+              ? `url(#front-grad-${partialInvader.id})`
+              : isMine
+              ? '#059669'
               : isAlly
               ? '#0e7490'
               : isHumanOther
               ? '#b45309'
-              : '#1d3768';
+              : '#1c3564';
 
             const stroke = isSelected
               ? '#7dd3fc'
               : isMine
               ? '#34d399'
               : partialInvader
-              ? '#f43f5e'
+              ? EMPIRE_COLORS[partialInvader.id]
               : isHumanOther
               ? '#fbbf24'
-              : '#3b63a3';
+              : '#365a96';
 
             return (
               <path
                 key={`pwr-${gameCountry.id}-${idx}`}
                 d={f.d}
                 fill={fill}
-                fillOpacity={gameCountry.isEliminated ? 0.58 : isSelected ? 0.96 : 0.9}
+                fillOpacity={gameCountry.isEliminated ? 0.55 : isSelected ? 0.95 : 0.88}
                 stroke={stroke}
-                strokeWidth={(isSelected || isMine || partialInvader ? 1.3 : 0.72) * invScale}
+                strokeWidth={(isSelected || isMine ? 1.25 : 0.7) * invScale}
+                strokeDasharray={partialInvader ? `${2.6 * invScale} ${1.5 * invScale}` : undefined}
                 className="cursor-pointer transition-opacity duration-150 hover:opacity-100"
                 onMouseEnter={() => {
                   const myRel = myCountry ? myCountry.relations[gameCountry.id] : null;
+                  const isSecretAlly = Boolean(myCountry?.secretAllies?.includes(gameCountry.id));
                   setHoveredInfo({
                     nameFa: `${gameCountry.nameFa}${gameCountry.playerName ? ` (${gameCountry.playerName})` : ''}`,
                     tagFa: gameCountry.isEliminated
                       ? 'سقوط دولت!'
+                      : isSecretAlly
+                      ? '🕵️ متحد محرمانه شما'
                       : partialInvader
-                      ? `${100 - gameCountry.integrityPct}٪ اشغال توسط ${partialInvader.nameFa}`
+                      ? `⚔️ ${100 - gameCountry.integrityPct}٪ مرز درگیر با ${partialInvader.nameFa}`
                       : gameCountry.archetypeTagFa || 'قدرت راهبردی',
                     subtitleFa: `خاک: ${gameCountry.integrityPct}٪ • رضایت: ${gameCountry.approval}٪${
-                      myRel !== null && !isMine ? ` • رابطه با شما: ${myRel > 0 ? `+${myRel}` : myRel}` : ''
-                    }`,
+                      gameCountry.orbitalSatellites > 0 ? ` • 🛰️ ${gameCountry.orbitalSatellites} ماهواره` : ''
+                    }${myRel !== null && !isMine ? ` • رابطه: ${myRel > 0 ? `+${myRel}` : myRel}` : ''}`,
                   });
                 }}
                 onClick={(e) => handleSelectMajorSafe(gameCountry.id, e)}
@@ -657,10 +661,10 @@ const WorldMapInner: React.FC<WorldMapProps> = ({
                   </circle>
                 )}
                 <polygon
-                  points="0,-4.6 4.6,0 0,4.6 -4.6,0"
+                  points="0,-4.4 4.4,0 0,4.4 -4.4,0"
                   fill={color}
                   stroke="#020617"
-                  strokeWidth={0.95}
+                  strokeWidth={0.9}
                 />
                 <title>{`${cp.nameFa} (کنترل: ${room.countries[cp.controller]?.nameFa || cp.controller}) — ${
                   cp.status === 'OPEN' ? 'آزاد' : cp.status === 'RESTRICTED' ? 'بازرسی نظامی' : 'مسدود شده!'
@@ -669,7 +673,7 @@ const WorldMapInner: React.FC<WorldMapProps> = ({
             );
           })}
 
-          {/* Filtered Non-Overlapping Operational Trajectories */}
+          {/* Filtered Operational Trajectories */}
           {renderedArcs.map((arc) => (
             <path
               key={arc.id}
@@ -684,34 +688,7 @@ const WorldMapInner: React.FC<WorldMapProps> = ({
             />
           ))}
 
-          {/* Minor Nation Conquest / Occupation Markers */}
-          {Object.values(room.minorNations)
-            .filter((m) => m.conqueredBy !== null || (m.occupierId !== null && m.occupationPct > 0))
-            .map((m) => {
-              const [mx, my] = projectPoint(m.coordinates);
-              const ownerId = m.conqueredBy || m.occupierId;
-              const owner = ownerId ? room.countries[ownerId] : null;
-              if (!owner) return null;
-              return (
-                <g
-                  key={`conq-${m.id}`}
-                  transform={`translate(${mx}, ${my}) scale(${invScale})`}
-                  className="cursor-pointer"
-                  onClick={(e) => handleSelectMinorSafe(m.id, e)}
-                >
-                  <circle
-                    cx={0}
-                    cy={0}
-                    r={m.conqueredBy ? 3.2 : 2.6}
-                    fill={EMPIRE_COLORS[owner.id]}
-                    stroke={m.conqueredBy ? '#ffffff' : '#fbbf24'}
-                    strokeWidth={0.75}
-                  />
-                </g>
-              );
-            })}
-
-          {/* 20 Major Power Capital Anchors & Optional Crisp Badges */}
+          {/* 20 Major Power Capital Anchors & Badges */}
           {Object.values(room.countries).map((c) => {
             const [ax, ay] = projectPoint(c.coordinates);
             const [rawDx, rawDy] = c.labelOffset || [0, 0];
@@ -725,6 +702,7 @@ const WorldMapInner: React.FC<WorldMapProps> = ({
             const isSelected = c.id === selectedCountryId;
             const isHuman = Boolean(c.playerId);
             const wasHit = attackedCountriesLastRound.has(c.id);
+            const hasSats = (c.orbitalSatellites || 0) > 0;
 
             return (
               <g key={`pin-${c.id}`}>
@@ -748,7 +726,7 @@ const WorldMapInner: React.FC<WorldMapProps> = ({
                   <circle
                     cx={0}
                     cy={0}
-                    r={2.5}
+                    r={2.4}
                     fill={
                       c.isEliminated
                         ? '#64748b'
@@ -768,8 +746,8 @@ const WorldMapInner: React.FC<WorldMapProps> = ({
                     x2={bx}
                     y2={by}
                     stroke={isSelected ? '#7dd3fc' : '#475569'}
-                    strokeWidth={0.75 * invScale}
-                    strokeOpacity={0.72}
+                    strokeWidth={0.72 * invScale}
+                    strokeOpacity={0.7}
                     pointerEvents="none"
                   />
                 )}
@@ -781,9 +759,9 @@ const WorldMapInner: React.FC<WorldMapProps> = ({
                     onClick={(e) => handleSelectMajorSafe(c.id, e)}
                   >
                     <rect
-                      x={-23}
+                      x={-24}
                       y={-8}
-                      width={46}
+                      width={48}
                       height={16}
                       rx={4.5}
                       fill={
@@ -811,6 +789,10 @@ const WorldMapInner: React.FC<WorldMapProps> = ({
                       }
                       strokeWidth={isSelected || isMine ? 1.2 : 0.7}
                     />
+                    {/* Subtle cyan satellite indicator dot on top-right of badge */}
+                    {hasSats && !c.isEliminated && (
+                      <circle cx={20} cy={-4.5} r={2} fill="#38bdf8" />
+                    )}
                     <text
                       x={0}
                       y={2.8}

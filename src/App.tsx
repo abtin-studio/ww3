@@ -46,6 +46,7 @@ import {
   UpgradeTrack,
 } from '../shared/types';
 import { CountryFlag } from './components/CountryFlag';
+import { BattleReplayOverlay } from './components/BattleReplayOverlay';
 import { ChatTargetSelection, DiplomacyChatPanel } from './components/DiplomacyChatPanel';
 import { GMControlPanel } from './components/GMControlPanel';
 import { LandingScreen } from './components/LandingScreen';
@@ -107,6 +108,53 @@ const PhaseCountdownBadge: React.FC<{
   );
 };
 
+/**
+ * Isolated Total Match Elapsed Timer for All Players (HH:MM:SS):
+ * Accurately tracks total elapsed game duration across pauses and save/loads without re-rendering <App>!
+ */
+const MatchElapsedTimer: React.FC<{
+  matchStartedAt: number | null;
+  pausedAt: number | null;
+  accumulatedPausedMs: number;
+  savedElapsedMs: number;
+  isPaused: boolean;
+  isFinished: boolean;
+}> = ({ matchStartedAt, pausedAt, accumulatedPausedMs, savedElapsedMs, isPaused, isFinished }) => {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!matchStartedAt || isPaused || isFinished) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [matchStartedAt, isPaused, isFinished]);
+
+  let totalMs = savedElapsedMs || 0;
+  if (!isFinished && matchStartedAt) {
+    const endRef = isPaused && pausedAt ? pausedAt : now;
+    totalMs = Math.max(totalMs, totalMs + (endRef - matchStartedAt - (accumulatedPausedMs || 0)));
+  }
+
+  const totalSec = Math.max(0, Math.floor(totalMs / 1000));
+  const hrs = Math.floor(totalSec / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  const secs = totalSec % 60;
+  const formatted =
+    hrs > 0
+      ? `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+      : `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+
+  return (
+    <span
+      title="مجموع زمان سپری‌شده از شروع این کارزار"
+      className="px-2.5 py-0.5 rounded-lg bg-slate-800/90 border border-slate-700 text-cyan-200 font-mono text-xs flex items-center gap-1.5"
+    >
+      <Clock className="w-3.5 h-3.5 text-cyan-400" />
+      <span className="hidden sm:inline text-slate-400 font-sans text-[11px]">زمان کل:</span>
+      <span className="font-bold">{formatted}</span>
+    </span>
+  );
+};
+
 type SidePanelTab = 'COUNTRY' | 'DIPLOMACY' | 'NEWS' | 'GM';
 
 export const App: React.FC = () => {
@@ -141,6 +189,8 @@ export const App: React.FC = () => {
   const [activeChatTarget, setActiveChatTarget] = useState<ChatTargetSelection>('GLOBAL');
   const [showGuideModal, setShowGuideModal] = useState(false);
   const [endgameDismissed, setEndgameDismissed] = useState(false);
+  const [showBattleReplay, setShowBattleReplay] = useState(false);
+  const lastAutoReplayedRoundRef = useRef<number>(0);
 
   // Secret Creator Console State (Item #21 — Zero visible UI button!)
   const [showSecretCheat, setShowSecretCheat] = useState(false);
@@ -254,6 +304,21 @@ export const App: React.FC = () => {
   const myCountry = room && myCountryId ? room.countries[myCountryId] : null;
   const isHost = Boolean(mePlayer?.isHost);
   const isGM = Boolean(mePlayer?.isGM);
+
+  // Auto-launch Cinematic Battle Replay before RoundSummaryModal whenever a clash-filled month resolves! (Idea #6!)
+  useEffect(() => {
+    const resolvedRound = myCountry?.lastRoundSummary?.roundResolved;
+    if (
+      room?.phase === 'PLANNING' &&
+      resolvedRound &&
+      resolvedRound > lastAutoReplayedRoundRef.current
+    ) {
+      lastAutoReplayedRoundRef.current = resolvedRound;
+      if ((room.lastRoundReplay?.length || 0) > 0) {
+        setShowBattleReplay(true);
+      }
+    }
+  }, [room?.phase, room?.lastRoundReplay, myCountry?.lastRoundSummary?.roundResolved]);
 
   useEffect(() => {
     if (isGM) {
@@ -720,11 +785,23 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* End-of-Month Summary Modal */}
-      {room.phase === 'PLANNING' && myCountry?.lastRoundSummary && (
+      {/* Cinematic Widescreen Live Battle Replay Theater (Idea #6!) */}
+      {showBattleReplay && room.lastRoundReplay && room.lastRoundReplay.length > 0 && (
+        <BattleReplayOverlay
+          roundNumber={myCountry?.lastRoundSummary?.roundResolved || Math.max(1, room.round - 1)}
+          monthLabelFa={myCountry?.lastRoundSummary?.monthLabelFa || room.calendarLabelFa}
+          events={room.lastRoundReplay}
+          onFinish={() => setShowBattleReplay(false)}
+        />
+      )}
+
+      {/* End-of-Month Summary Modal (Opens right after Cinematic Replay finishes!) */}
+      {room.phase === 'PLANNING' && !showBattleReplay && myCountry?.lastRoundSummary && (
         <RoundSummaryModal
           room={room}
           summary={myCountry.lastRoundSummary}
+          hasReplay={(room.lastRoundReplay?.length || 0) > 0}
+          onRewatchReplay={() => setShowBattleReplay(true)}
           onDismiss={() => socketRef.current?.emit('game:dismiss_summary')}
         />
       )}
@@ -817,6 +894,14 @@ export const App: React.FC = () => {
               ماه {room.round}/{room.settings.maxRounds} •{' '}
               <span className="text-cyan-300">{room.calendarLabelFa}</span>
             </span>
+            <MatchElapsedTimer
+              matchStartedAt={room.matchStartedAt}
+              pausedAt={room.pausedAt}
+              accumulatedPausedMs={room.accumulatedPausedMs || 0}
+              savedElapsedMs={room.savedElapsedMs || 0}
+              isPaused={room.isPaused}
+              isFinished={room.phase === 'FINISHED'}
+            />
             <span className="hidden md:inline-block text-xs text-amber-300 font-mono bg-amber-500/10 border border-amber-500/25 px-2.5 py-0.5 rounded-lg">
               🛢️ نفت جهانی: ${room.market.oilPriceUsd}
             </span>
@@ -1026,6 +1111,47 @@ export const App: React.FC = () => {
         )}
       </header>
 
+      {/* Interactive Global Flashpoint Event Banner (Idea #4 — Non-blocking 1-click decision!) */}
+      {room.phase === 'PLANNING' &&
+        room.activeFlashpoint &&
+        myCountry &&
+        !myCountry.isEliminated &&
+        !room.activeFlashpoint.chosenBy[myCountry.id] && (
+          <div className="max-w-[1640px] w-full mx-auto px-3 sm:px-4 pt-3">
+            <div className="glass-panel border-amber-400/45 rounded-2xl p-3.5 flex flex-col xl:flex-row xl:items-center justify-between gap-3 animate-panel-in">
+              <div className="space-y-0.5">
+                <div className="text-xs sm:text-sm font-black text-amber-300 flex items-center gap-1.5">
+                  <span>{room.activeFlashpoint.icon}</span>
+                  <span>رویداد ویژه جهانی: {room.activeFlashpoint.titleFa}</span>
+                </div>
+                <p className="text-[11px] sm:text-xs text-slate-300">{room.activeFlashpoint.descFa}</p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 shrink-0 text-xs">
+                {room.activeFlashpoint.options.map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => {
+                      sound.playOrderConfirm();
+                      socketRef.current?.emit(
+                        'game:flashpoint_choice',
+                        opt.id,
+                        (res: { ok: boolean; messageFa?: string; errorFa?: string }) => {
+                          showToast(res.messageFa || res.errorFa || '', res.ok ? 'ok' : 'warn');
+                        }
+                      );
+                    }}
+                    className="px-3 py-2 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/40 text-right transition"
+                  >
+                    <div className="font-black text-amber-200">{opt.labelFa}</div>
+                    <div className="text-[10px] text-slate-300 mt-0.5">{opt.effectFa}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
       {/* Main Workspace */}
       <main className="flex-1 max-w-[1640px] w-full mx-auto p-3 sm:p-4 grid grid-cols-1 lg:grid-cols-12 gap-4">
         {/* Interactive World Map */}
@@ -1126,6 +1252,14 @@ export const App: React.FC = () => {
                   socketRef.current?.emit(
                     'game:emergency_action',
                     kind,
+                    (res: { ok: boolean; messageFa?: string; errorFa?: string }) => {
+                      showToast(res.messageFa || res.errorFa || '', res.ok ? 'ok' : 'warn');
+                    }
+                  )
+                }
+                onLaunchSatellite={() =>
+                  socketRef.current?.emit(
+                    'game:launch_satellite',
                     (res: { ok: boolean; messageFa?: string; errorFa?: string }) => {
                       showToast(res.messageFa || res.errorFa || '', res.ok ? 'ok' : 'warn');
                     }

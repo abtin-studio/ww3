@@ -14,6 +14,8 @@ import {
   AlertTriangle,
   Lock,
   DollarSign,
+  Target,
+  Orbit,
 } from 'lucide-react';
 import {
   CabinetSuggestion,
@@ -27,6 +29,7 @@ import {
   getMaxCovertOrdersPerRound,
   getMaxMilitaryOrdersPerRound,
   getMaxUpgradesPerRound,
+  getSatelliteLaunchCost,
   getSmartCabinetAdvice,
   getUpgradeNextCost,
 } from '../../shared/advisor';
@@ -50,6 +53,7 @@ interface MyCountryPanelProps {
   onInstantUpgrade: (track: UpgradeTrack) => void;
   onInstantInfra: (infraType: InfrastructureType) => void;
   onEmergencyAction: (kind: EmergencyActionKind) => void;
+  onLaunchSatellite: () => void;
   onInstantWeapon: (weaponId: string, quantity: number) => void;
   onSellWeapon: (weaponId: string, quantity: number) => void;
   onSpotTrade: (resource: 'OIL' | 'GAS' | 'FOOD' | 'WATER' | 'URANIUM', mode: 'BUY' | 'SELL') => void;
@@ -73,6 +77,7 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
   onInstantUpgrade,
   onInstantInfra,
   onEmergencyAction,
+  onLaunchSatellite,
   onInstantWeapon,
   onSellWeapon,
   onSpotTrade,
@@ -120,6 +125,7 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
   const maxUps = getMaxUpgradesPerRound(me);
   const maxMilOps = getMaxMilitaryOrdersPerRound(me);
   const maxCovOps = getMaxCovertOrdersPerRound(me);
+  const satCostB = getSatelliteLaunchCost(me, room.settings.difficulty);
   const totalRuins = Object.values(me.damagedInfra || {}).reduce((a, b) => a + b, 0);
 
   const gridEmergencyCost = getEmergencyActionCost(me, 'REPAIR_GRID');
@@ -259,12 +265,90 @@ export const MyCountryPanel: React.FC<MyCountryPanelProps> = ({
               </div>
             </div>
             <div className="glass-card rounded-xl p-2.5">
-              <div className="text-slate-400 text-[10px]">سهمیه سایبری و جاسوسی</div>
+              <div className="text-slate-400 text-[10px]">سهمیه سایبری و نیابتی</div>
               <div className="font-mono font-black text-purple-300 text-xs sm:text-sm mt-0.5">
                 🕵️ {me.covertOrdersUsedThisRound} / {maxCovOps}
               </div>
             </div>
           </div>
+
+          {/* Space Command Satellite Bar (Idea #5 — 1-Click Effortless Control!) */}
+          <div className="glass-card border-sky-500/35 rounded-2xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
+            <div>
+              <div className="font-black text-sky-300 flex items-center gap-1.5">
+                <Orbit className="w-4 h-4" />
+                🛰️ فرماندهی فضایی کشور: {me.orbitalSatellites || 0} از ۳ ماهواره فعال در مدار زمین
+              </div>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                هر ماهواره فعال: +۶٪ دقت حملات، +۱۰ رهگیری پدافند و +$10B درآمد ماهانه (نیازمند هوافضا سطح ۲)
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={(me.orbitalSatellites || 0) >= 3 || me.upgrades.AEROSPACE < 2}
+              onClick={() => {
+                sound.playLevelUp();
+                onLaunchSatellite();
+              }}
+              className="px-3.5 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-black shrink-0 disabled:opacity-40"
+            >
+              {(me.orbitalSatellites || 0) >= 3
+                ? 'مدار تکمیل (۳/۳) ✓'
+                : me.upgrades.AEROSPACE < 2
+                ? 'نیازمند هوافضا Lv.2'
+                : `پرتاب ماهواره ($${satCostB}B)`}
+            </button>
+          </div>
+
+          {/* Personal Secret Missions Card (Idea #3 — Auto-rewarded, zero clutter!) */}
+          {me.secretMissions && me.secretMissions.length > 0 && (
+            <div className="glass-card border-indigo-500/30 rounded-2xl p-3.5 space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-black text-indigo-300 flex items-center gap-1.5">
+                  <Target className="w-4 h-4" />
+                  ماموریت‌های مخفی شخصی شما (جایزه خودکار و امتیاز پیروزی)
+                </span>
+                {me.secretAllies && me.secretAllies.length > 0 && (
+                  <span className="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 text-[10px] font-bold">
+                    🕵️ {me.secretAllies.length} متحد مخفی
+                  </span>
+                )}
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                {me.secretMissions.map((m) => {
+                  const pct = Math.min(100, Math.round((m.currentValue / Math.max(1, m.targetValue)) * 100));
+                  return (
+                    <div
+                      key={m.id}
+                      className={`p-2.5 rounded-xl border space-y-1 ${
+                        m.completed
+                          ? 'bg-emerald-500/15 border-emerald-400/50'
+                          : 'bg-[#060c18] border-slate-800'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="font-bold text-white text-[11px]">{m.titleFa}</span>
+                        {m.completed ? (
+                          <span className="text-[10px] font-black text-emerald-300 shrink-0">✓ انجام شد!</span>
+                        ) : (
+                          <span className="text-[10px] font-mono text-amber-300 shrink-0">
+                            +${m.rewardCashB}B
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[10px] text-slate-400 leading-snug">{m.descFa}</p>
+                      <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full transition-all ${m.completed ? 'bg-emerald-400' : 'bg-indigo-400'}`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Emergency Reconstruction */}
           {(me.devastation > 0 || me.powerGrid < 95 || me.radarIntegrity < 95 || me.approval < 80) && (

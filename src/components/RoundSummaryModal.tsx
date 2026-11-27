@@ -1,5 +1,5 @@
 import React from 'react';
-import { CheckCircle2, XCircle, ShieldAlert, TrendingUp, Globe2, ArrowLeft, EyeOff } from 'lucide-react';
+import { CheckCircle2, XCircle, ShieldAlert, TrendingUp, Globe2, ArrowLeft, EyeOff, Film } from 'lucide-react';
 import { GameRoomState, RoundSummaryForCountry } from '../../shared/types';
 import { sound } from '../utils/sound';
 import { CountryFlag } from './CountryFlag';
@@ -7,12 +7,16 @@ import { CountryFlag } from './CountryFlag';
 interface RoundSummaryModalProps {
   room: GameRoomState;
   summary: RoundSummaryForCountry;
+  hasReplay?: boolean;
+  onRewatchReplay?: () => void;
   onDismiss: () => void;
 }
 
 export const RoundSummaryModal: React.FC<RoundSummaryModalProps> = ({
   room,
   summary,
+  hasReplay,
+  onRewatchReplay,
   onDismiss,
 }) => {
   const totalCashEarned = summary.netIncomeB + summary.autoSoldOilB;
@@ -21,7 +25,7 @@ export const RoundSummaryModal: React.FC<RoundSummaryModalProps> = ({
     <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-3 sm:p-5">
       <div className="w-full max-w-2xl max-h-[90vh] glass-panel rounded-3xl flex flex-col overflow-hidden animate-panel-in">
         {/* Header */}
-        <div className="px-5 py-4 bg-gradient-to-l from-emerald-950/70 via-[#0a162c] to-[#081020] border-b border-slate-800 flex items-center justify-between">
+        <div className="px-5 py-4 bg-gradient-to-l from-emerald-950/70 via-[#0a162c] to-[#081020] border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
           <div>
             <span className="text-[11px] font-bold text-emerald-400">
               گزارش رسمی پایان ماه {summary.roundResolved}
@@ -30,9 +34,23 @@ export const RoundSummaryModal: React.FC<RoundSummaryModalProps> = ({
               📊 خلاصه عملکرد و تحولات {summary.monthLabelFa}
             </h2>
           </div>
-          <span className="px-3 py-1 rounded-xl bg-amber-500/15 border border-amber-500/35 text-amber-300 font-mono text-xs font-bold">
-            نفت جهانی: ${room.market.oilPriceUsd}
-          </span>
+          <div className="flex items-center gap-2">
+            {hasReplay && onRewatchReplay && (
+              <button
+                type="button"
+                onClick={() => {
+                  sound.playClick();
+                  onRewatchReplay();
+                }}
+                className="px-3 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-400/50 text-rose-200 text-xs font-black flex items-center gap-1.5"
+              >
+                <Film className="w-3.5 h-3.5" /> پخش مجدد نبردها
+              </button>
+            )}
+            <span className="px-3 py-1 rounded-xl bg-amber-500/15 border border-amber-500/35 text-amber-300 font-mono text-xs font-bold">
+              نفت جهانی: ${room.market.oilPriceUsd}
+            </span>
+          </div>
         </div>
 
         <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1">

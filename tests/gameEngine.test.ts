@@ -9,7 +9,9 @@ import {
   executeDiplomaticAction,
   instantBuildInfra,
   instantEmergencyAction,
+  instantLaunchSatellite,
   instantProduceWeapon,
+  instantRespondFlashpoint,
   instantSellWeapon,
   instantSpotTrade,
   instantUpgradeTrack,
@@ -18,6 +20,7 @@ import {
   prepareEndOfPlanning,
   queuePlayerOrder,
   resolveCurrentRound,
+  sanitizeRoomForPlayer,
 } from '../server/gameEngine';
 import { createAppServer } from '../server/index';
 import { INFRASTRUCTURE_CATALOG } from '../shared/realWorldData';
@@ -34,14 +37,102 @@ const DEFAULT_SETTINGS = {
 describe('WW3 Global Command v4.0 — Diplomacy, Quotas, Anti-Wipeout, Save/Load, F5 Safety & Creator Console', () => {
   it('initializes v4.0 schema with Food/Water ecosystem, Bilateral Relations, Science Academy & 7-pillar Rankings', () => {
     const room = createNewRoomState('V4A', 'World v4', 'p1', 'Abtin', DEFAULT_SETTINGS);
-    expect(room.schemaVersion).toBe(4);
+    expect(room.schemaVersion).toBe(5);
     expect(Object.keys(room.countries).length).toBe(20);
     expect(room.countries.IR.waterReserve).toBeGreaterThan(50);
     expect(room.countries.IR.foodReserve).toBeGreaterThan(50);
+    expect(room.countries.IR.secretMissions.length).toBe(2);
+    expect(room.countries.US.orbitalSatellites).toBeGreaterThanOrEqual(1);
     expect(room.countries.IR.relations.RU).toBeGreaterThan(30);
     expect(room.countries.IR.relations.IL).toBeLessThan(-50);
     expect(room.rankings[0].tierFa).toBe('ابرقدرت جهانی');
     expect(room.rankings[0].techScore).toBeGreaterThan(0);
+  });
+
+  it('executes v5.0 Proxy Warfare, Secret Defense Pact Ambush, Space Command (Satellite/ASAT), Secret Missions, Flashpoints & Battle Replay', () => {
+    const room = createNewRoomState('V5X', 'World v5', 'p1', 'Abtin', {
+      ...DEFAULT_SETTINGS,
+      enableAINations: false,
+    });
+    room.phase = 'PLANNING';
+    room.players[0].countryId = 'IR';
+    room.players.push({
+      id: 'p2',
+      name: 'Friend2',
+      isHost: false,
+      isGM: false,
+      countryId: 'DE',
+      connected: true,
+    });
+    const ir = room.countries.IR;
+    const ru = room.countries.RU;
+    const us = room.countries.US;
+    ir.playerId = 'p1';
+    ir.treasuryB = 900;
+    ir.oilReserve = 400;
+    ir.upgrades.AEROSPACE = 4;
+
+    // 1. Space Command: Launch Satellite -> Auto-completes Energy/Wealth Secret Mission too!
+    expect(instantLaunchSatellite(room, 'IR').ok).toBe(true);
+    expect(ir.orbitalSatellites).toBe(1);
+    expect(ir.secretMissions[0].completed).toBe(true);
+
+    // 2. Secret Backroom Defense Pact between IR and RU (masked from DE!)
+    const secretPact = {
+      id: 'sec-1',
+      round: 1,
+      from: 'IR' as const,
+      to: 'RU' as const,
+      offerType: 'SECRET_DEFENSE_PACT' as const,
+      amount: 1,
+      priceB: 20,
+      direction: 'PACT' as const,
+      noteFa: '',
+      status: 'PENDING' as const,
+    };
+    expect(evaluateAITradeOffer(room, secretPact).accepted).toBe(true);
+    expect(executeAcceptedTrade(room, secretPact).ok).toBe(true);
+    expect(ir.secretAllies).toContain('RU');
+    // Verify other players (p2 / DE) CANNOT see IR's secret allies or secret missions!
+    const sanitizedForDE = sanitizeRoomForPlayer(room, 'p2');
+    expect(sanitizedForDE.countries.IR.secretAllies.length).toBe(0);
+    expect(sanitizedForDE.countries.IR.secretMissions.length).toBe(0);
+
+    // 3. Queue Proxy Insurgency + ASAT Strike on US (which starts with 1 satellite) + US attacks IR (triggering RU Secret Ambush!)
+    expect(
+      queuePlayerOrder(room, 'IR', {
+        kind: 'COVERT_OPERATION',
+        targetCountry: 'US',
+        covertType: 'PROXY_INSURGENCY',
+      }).ok
+    ).toBe(true);
+    expect(
+      queuePlayerOrder(room, 'IR', {
+        kind: 'MILITARY_OPERATION',
+        targetCountry: 'US',
+        militaryType: 'ASAT_STRIKE',
+      }).ok
+    ).toBe(true);
+    expect(
+      queuePlayerOrder(room, 'US', {
+        kind: 'MILITARY_OPERATION',
+        targetCountry: 'IR',
+        militaryType: 'MISSILE_DRONE_STRIKE',
+      }).ok
+    ).toBe(true);
+
+    resolveCurrentRound(room);
+
+    // Secret ambush sprung -> RU unveiled as ally & recorded in Cinematic Battle Replay!
+    expect(ir.allies).toContain('RU');
+    expect(room.lastRoundReplay.some((ev) => ev.kind === 'SECRET_AMBUSH')).toBe(true);
+    expect(room.lastRoundReplay.some((ev) => ev.kind === 'ASAT')).toBe(true);
+
+    // Round 2 spawns Interactive Global Flashpoint!
+    expect(room.round).toBe(2);
+    expect(room.activeFlashpoint).not.toBeNull();
+    expect(instantRespondFlashpoint(room, 'IR', 'A').ok).toBe(true);
+    expect(room.activeFlashpoint?.chosenBy.IR).toBe('A');
   });
 
   it('signs Peace Treaties even between bitter rivals, lifts sanctions, sets 3-month truce & blocks attacks', () => {

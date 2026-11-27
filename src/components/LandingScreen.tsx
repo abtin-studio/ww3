@@ -108,7 +108,7 @@ export const LandingScreen: React.FC<LandingScreenProps> = ({
         <div className="text-center space-y-2.5">
           <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs sm:text-sm font-bold shadow-lg">
             <Radio className="w-4 h-4 animate-pulse text-emerald-400" />
-            نسخه ۴.۰ فرماندهی کل • دیپلماسی زنده، اقتصاد سوخت/آب/غذا، ذخیره بازی و ۱۹۵ کشور واقعی
+            نسخه ۵.۰ فرماندهی کل • پخش زنده سینمایی نبردها، پیمان‌های مخفی، جنگ نیابتی و فرماندهی فضایی
           </div>
           <h1 className="text-3xl sm:text-5xl font-black tracking-tight text-white">
             جنگ جهانی: <span className="text-emerald-400">فرماندهی کل</span>

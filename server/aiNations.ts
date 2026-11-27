@@ -86,6 +86,30 @@ export function evaluateAITradeOffer(
     };
   }
 
+  // 2.5 SECRET BACKROOM DEFENSE PACT (Idea #2 — Hidden ambush alliance!)
+  if (offer.offerType === 'SECRET_DEFENSE_PACT') {
+    if (ai.secretAllies.includes(sender.id) || ai.allies.includes(sender.id)) {
+      return { accepted: true, reasonFa: 'پیمان دفاعی هم‌اکنون برقرار است.' };
+    }
+    if (ai.lastAttackedBy === sender.id || rel < 8) {
+      return {
+        accepted: false,
+        reasonFa: `سطح اعتماد سیاسی (${rel}) برای امضای پیمان دفاعی محرمانه کافی نیست (حداقل رابطه +۱۰ لازم است).`,
+      };
+    }
+    const minSecretCost = rel >= 45 ? 12 : Math.round(22 * hardModeFactor);
+    if (offer.priceB >= minSecretCost) {
+      return {
+        accepted: true,
+        reasonFa: `🕵️ ${ai.nameFa} به صورت کاملاً محرمانه پیمان دفاعی پشت‌پرده را امضا کرد! در صورت حمله دشمن به شما، جنگنده‌های آن‌ها مهاجم را غافلگیر می‌کنند.`,
+      };
+    }
+    return {
+      accepted: false,
+      reasonFa: `سرویس امنیتی ${ai.nameFa} برای تضمین پیمان دفاعی محرمانه حداقل $${minSecretCost}B درخواست کرد.`,
+    };
+  }
+
   // 3. FORMAL MILITARY ALLIANCE (Checks bilateral relation instead of permanent hardcoded block!)
   if (offer.offerType === 'ALLIANCE') {
     if (ai.allies.includes(sender.id)) {
@@ -440,6 +464,22 @@ export function runLivingWorldAITurn(
     }
 
     const mil = computeCountryMilitary(ai);
+    // AI Space Command: launch orbital satellites when Aerospace >= 3
+    if (
+      (ai.orbitalSatellites || 0) < 3 &&
+      ai.upgrades.AEROSPACE >= 3 &&
+      ai.treasuryB >= 130 &&
+      Math.random() < 0.32
+    ) {
+      ai.treasuryB -= 36;
+      ai.orbitalSatellites = (ai.orbitalSatellites || 0) + 1;
+    }
+
+    // AI participates in Global Flashpoint if active
+    if (room.activeFlashpoint && !room.activeFlashpoint.chosenBy[ai.id]) {
+      room.activeFlashpoint.chosenBy[ai.id] = ai.treasuryB >= 60 ? 'A' : 'C';
+    }
+
     if (ai.treasuryB >= 105 && mil.totalUnits < 36 && Math.random() < aiGrowthChance * 0.82) {
       const buildable = Object.values(WEAPONS_CATALOG).filter(
         (w) =>
@@ -573,7 +613,14 @@ export function runLivingWorldAITurn(
       if (rivalPool.length > 0) {
         const rival = room.countries[rivalPool[Math.floor(Math.random() * rivalPool.length)]];
         if (Math.random() < 0.6) {
-          const covChoices: CovertOpType[] = ['SAT_RECON', 'BLACKOUT_VIRUS', 'TREASURY_HEIST', 'STUXNET_SABOTAGE', 'INSURGENCY_PSYOPS'];
+          const covChoices: CovertOpType[] = [
+            'SAT_RECON',
+            'PROXY_INSURGENCY',
+            'BLACKOUT_VIRUS',
+            'TREASURY_HEIST',
+            'STUXNET_SABOTAGE',
+            'INSURGENCY_PSYOPS',
+          ];
           const covType = covChoices[Math.floor(Math.random() * covChoices.length)];
           ai.treasuryB -= 16;
           aiMilitaryActionsThisRound += 1;

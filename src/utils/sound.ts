@@ -45,7 +45,6 @@ class TacticalAudio {
     return this.muted;
   }
 
-  // Ultra-soft velvet tactile UI click
   public playClick(): void {
     const audio = this.ensureOut();
     if (!audio) return;
@@ -175,7 +174,61 @@ class TacticalAudio {
     });
   }
 
-  // Warm submarine/command-center sonar alert (zero harsh sawtooth!)
+  // === CINEMATIC BATTLE REPLAY SOUND DESIGN ===
+  public playMissileLaunch(): void {
+    const audio = this.ensureOut();
+    if (!audio) return;
+    const { ctx, out } = audio;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(190, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(620, ctx.currentTime + 0.35);
+    gain.gain.setValueAtTime(0.035, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0008, ctx.currentTime + 0.38);
+    osc.connect(gain);
+    gain.connect(out);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.39);
+  }
+
+  public playInterceptShield(): void {
+    const audio = this.ensureOut();
+    if (!audio) return;
+    const { ctx, out } = audio;
+    [784, 1174.66].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      const t = ctx.currentTime + i * 0.05;
+      osc.frequency.setValueAtTime(freq, t);
+      gain.gain.setValueAtTime(0.048, t);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.22);
+      osc.connect(gain);
+      gain.connect(out);
+      osc.start(t);
+      osc.stop(t + 0.23);
+    });
+  }
+
+  public playCinematicBoom(heavy = false): void {
+    const audio = this.ensureOut();
+    if (!audio) return;
+    const { ctx, out } = audio;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    const dur = heavy ? 0.55 : 0.34;
+    osc.frequency.setValueAtTime(heavy ? 120 : 145, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(34, ctx.currentTime + dur);
+    gain.gain.setValueAtTime(heavy ? 0.11 : 0.075, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0008, ctx.currentTime + dur);
+    osc.connect(gain);
+    gain.connect(out);
+    osc.start();
+    osc.stop(ctx.currentTime + dur + 0.02);
+  }
+
   public playRadarSiren(): void {
     const audio = this.ensureOut();
     if (!audio) return;

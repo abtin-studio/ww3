@@ -133,6 +133,7 @@ export type MilitaryOpType =
   | 'NAVAL_BLOCKADE_STRIKE'
   | 'GROUND_CONQUEST'
   | 'LIBERATION_COUNTEROFFENSIVE'
+  | 'ASAT_STRIKE'
   | 'NUCLEAR_STRIKE';
 
 export type StrikeTargetSector =
@@ -144,6 +145,7 @@ export type StrikeTargetSector =
 
 export type CovertOpType =
   | 'SAT_RECON'
+  | 'PROXY_INSURGENCY'
   | 'INSURGENCY_PSYOPS'
   | 'BLACKOUT_VIRUS'
   | 'TREASURY_HEIST'
@@ -257,6 +259,72 @@ export type UltimatumDemand =
   | 'LIFT_SANCTION'
   | 'OPEN_CHOKEPOINT';
 
+export type SecretMissionKind =
+  | 'ENERGY_WEALTH'
+  | 'DIPLOMATIC_PEACE'
+  | 'REGIONAL_INFLUENCE'
+  | 'SPACE_TECH_MASTER';
+
+export interface SecretMission {
+  id: string;
+  kind: SecretMissionKind;
+  titleFa: string;
+  descFa: string;
+  targetValue: number;
+  currentValue: number;
+  rewardCashB: number;
+  rewardScore: number;
+  completed: boolean;
+  completedRound: number | null;
+}
+
+export interface FlashpointOption {
+  id: 'A' | 'B' | 'C';
+  labelFa: string;
+  effectFa: string;
+  costB: number;
+}
+
+export interface GlobalFlashpoint {
+  id: string;
+  round: number;
+  icon: string;
+  titleFa: string;
+  descFa: string;
+  options: FlashpointOption[];
+  chosenBy: Partial<Record<CountryId, 'A' | 'B' | 'C'>>;
+}
+
+export type ReplayEventKind =
+  | 'MISSILE'
+  | 'AIR'
+  | 'NAVAL'
+  | 'GROUND'
+  | 'NUCLEAR'
+  | 'ASAT'
+  | 'PROXY'
+  | 'SECRET_AMBUSH'
+  | 'CYBER';
+
+export interface CinematicReplayEvent {
+  id: string;
+  round: number;
+  from: [number, number];
+  to: [number, number];
+  attackerId: CountryId | null;
+  attackerNameFa: string;
+  defenderId?: CountryId;
+  targetNameFa: string;
+  kind: ReplayEventKind;
+  succeeded: boolean;
+  intercepted: boolean;
+  secretAllyId?: CountryId;
+  secretAllyNameFa?: string;
+  headlineFa: string;
+  impactBadgeFa: string;
+  secretActorOnly?: boolean;
+}
+
 export interface MinorNationState {
   id: string;
   isoNumeric: string;
@@ -347,10 +415,13 @@ export interface CountryState {
   techLevel: number; // 1 - 12
   nuclearProgress: number; // 0 - 100
   warheads: number;
+  orbitalSatellites: number; // 0 - 3 Space Command satellites
   commanderBuff: number;
   securityAlertBonus: number;
   maritimeBlockaded: boolean;
   militaryXp: number;
+  missionBonusScore: number;
+  secretMissions: SecretMission[];
 
   // Monthly Pacing & Operational Quotas
   upgradesUsedThisRound: number;
@@ -367,11 +438,12 @@ export interface CountryState {
   damagedInfra: Record<InfrastructureType, number>;
   weapons: Record<string, number>;
 
-  // Diplomacy, Bilateral Relations (-100..+100), Truces & Coalitions
+  // Diplomacy, Bilateral Relations (-100..+100), Truces, Secret Defense Pacts & Coalitions
   coalitionId: string | null;
   relations: Record<CountryId, number>;
   nonAggressionPacts: Partial<Record<CountryId, number>>; // CountryId -> expiresAtRound
   allies: CountryId[];
+  secretAllies: CountryId[]; // Hidden backroom defense pacts!
   sanctionedBy: CountryId[];
   airspaceOpenTo: CountryId[];
   airspaceClosedTo: CountryId[];
@@ -431,6 +503,7 @@ export type TradeResourceKind =
   | 'URANIUM'
   | 'WEAPON'
   | 'PEACE_TREATY'
+  | 'SECRET_DEFENSE_PACT'
   | 'ALLIANCE'
   | 'LIFT_SANCTION';
 
@@ -538,10 +611,14 @@ export interface CreatorCheatPayload {
 }
 
 export interface GameRoomState {
-  schemaVersion: 4;
+  schemaVersion: 5;
   roomCode: string;
   roomName: string;
   createdAt: number;
+  matchStartedAt: number | null;
+  pausedAt: number | null;
+  accumulatedPausedMs: number;
+  savedElapsedMs: number;
   phase: GamePhase;
   isPaused: boolean;
   pausedRemainingMs: number | null;
@@ -558,6 +635,8 @@ export interface GameRoomState {
   coalitions: Record<string, Coalition>;
   chokepoints: Record<ChokepointId, ChokepointState>;
   market: WorldMarket;
+  activeFlashpoint: GlobalFlashpoint | null;
+  lastRoundReplay: CinematicReplayEvent[];
   news: NewsItem[];
   battles: BattleOutcomeLog[];
   visualEvents: MapVisualEvent[];

@@ -275,6 +275,8 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
                   <span className="text-slate-200">
                     {tr.offerType === 'PEACE_TREATY'
                       ? `🕊️ پیشنهاد پیمان صلح و آتش‌بس ۳ ماهه (+$${tr.priceB}B)`
+                      : tr.offerType === 'SECRET_DEFENSE_PACT'
+                      ? `🕵️ پیشنهاد پیمان دفاعی محرمانه پشت‌پرده (مخفی از سایرین • +$${tr.priceB}B)`
                       : tr.offerType === 'ALLIANCE'
                       ? `🤝 پیشنهاد پیمان دفاعی مشترک (+$${tr.priceB}B)`
                       : tr.offerType === 'WEAPON'

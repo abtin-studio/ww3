@@ -46,7 +46,9 @@ export function computeCountryMilitary(country: CountryState): MilitarySummary {
   let navalPower = 8 + country.upgrades.NAVAL_POWER * 14;
   let groundPower = 12 + country.upgrades.ARMOR_LAND * 14;
   let interceptBonus =
-    country.infrastructure.RADAR_NETWORK * 3.5 + country.upgrades.AIR_DEFENSE * 6;
+    country.infrastructure.RADAR_NETWORK * 3.5 +
+    country.upgrades.AIR_DEFENSE * 6 +
+    (country.orbitalSatellites || 0) * 10;
   let stealthPower = 0;
 
   let hypersonicUnits = 0;
@@ -240,6 +242,15 @@ export function getInfraNextCost(
   return { costB: normalCost, isRebuild: false };
 }
 
+export function getSatelliteLaunchCost(
+  country: CountryState,
+  difficulty: DifficultyLevel = 'NORMAL'
+): number {
+  const diffMult = getDifficultyPlayerCostMult(difficulty, country.playerId !== null);
+  const cur = country.orbitalSatellites || 0;
+  return Math.round((32 + cur * 10) * diffMult);
+}
+
 export function getEmergencyActionCost(country: CountryState, kind: EmergencyActionKind): number {
   const scale = Math.max(0.8, Math.min(1.6, country.gdpB / 520));
   if (kind === 'REPAIR_GRID') return Math.round(22 * scale);
@@ -356,7 +367,10 @@ export function computeEconomyProjection(
 
   const gridFactor = Math.max(0.38, country.powerGrid / 100);
   const approvalFactor = country.approval < 35 ? 0.66 : country.approval > 72 ? 1.1 : 0.96;
-  const industryTrackBonus = country.upgrades.INDUSTRY * 18 + (country.infrastructure.SCIENCE_ACADEMY || 0) * 6;
+  const industryTrackBonus =
+    country.upgrades.INDUSTRY * 18 +
+    (country.infrastructure.SCIENCE_ACADEMY || 0) * 6 +
+    (country.orbitalSatellites || 0) * 10;
 
   const grossGdpIncomeB = Math.round(
     (country.gdpB * 0.075 * territoryScale + country.infrastructure.ARMS_FACTORY * 8 + industryTrackBonus) *
@@ -494,8 +508,49 @@ export function evaluateMilitaryOpDetails(
 
   const intel = attacker.knownIntel[defender.id];
   const intelAge = intel ? Math.max(0, currentRound - intel.round) : 99;
-  const reconBonus = intelAge <= 2 ? 14 : intelAge <= 5 ? 7 : 0;
-  if (reconBonus > 0) factorsFa.push(`+${reconBonus}٪ اشراف ماهواره‌ای`);
+  const satBonus = (attacker.orbitalSatellites || 0) * 6;
+  const reconBonus = (intelAge <= 2 ? 14 : intelAge <= 5 ? 7 : 0) + satBonus;
+  if (reconBonus > 0) factorsFa.push(`+${reconBonus}٪ اشراف ماهواره‌ای و مداری`);
+
+  if (opType === 'ASAT_STRIKE') {
+    const fuelCost = 8;
+    const targetSats = defender.orbitalSatellites || 0;
+    if (targetSats <= 0) {
+      return {
+        winPct: 0,
+        tracePct: 100,
+        canExecute: false,
+        requirementErrorFa: 'کشور هدف هیچ ماهواره فعالی در مدار زمین ندارد!',
+        fuelCost,
+        factorsFa: ['بدون هدف مداری'],
+      };
+    }
+    if (attacker.upgrades.AEROSPACE < 3 && atk.missileCount < 2) {
+      return {
+        winPct: 0,
+        tracePct: 100,
+        canExecute: false,
+        requirementErrorFa: 'نیازمند دکترین هوافضای سطح ۳ (یا حداقل ۲ تیپ موشکی) است!',
+        fuelCost,
+        factorsFa: ['فاقد موشک ضدماهواره'],
+      };
+    }
+    const raw =
+      52 +
+      attacker.upgrades.AEROSPACE * 5 +
+      (attacker.orbitalSatellites || 0) * 6 -
+      defender.upgrades.CYBER_AI * 3 -
+      defender.upgrades.AIR_DEFENSE * 2;
+    factorsFa.push(`+${attacker.upgrades.AEROSPACE * 5}٪ توان موشکی مداری`);
+    return {
+      winPct: Math.min(92, Math.max(22, Math.round(raw))),
+      tracePct: 100,
+      canExecute: attacker.oilReserve >= fuelCost,
+      requirementErrorFa: attacker.oilReserve < fuelCost ? 'کمبود سوخت پرتاب مداری!' : null,
+      fuelCost,
+      factorsFa,
+    };
+  }
 
   const seadOrAirQueued = attacker.orders.some(
     (o) =>
@@ -751,18 +806,21 @@ export function evaluateCovertOpDetails(
       ? -5
       : covertType === 'ASSASSINATE_SCIENTIST'
       ? -3
+      : covertType === 'PROXY_INSURGENCY'
+      ? 6
       : 2;
 
   const winPct = Math.min(
-    88,
-    Math.max(14, Math.round(48 + diff + targetHardness + (defender.devastation >= 40 ? 8 : 0) - alertPenalty))
+    90,
+    Math.max(16, Math.round(48 + diff + targetHardness + (defender.devastation >= 40 ? 8 : 0) - alertPenalty))
   );
 
   const hasCounterIntel = defender.upgrades.INTELLIGENCE >= 4 || defender.intelLevel >= 8;
+  const proxyStealthBonus = covertType === 'PROXY_INSURGENCY' ? -14 : 0;
   const rawTrace = hasCounterIntel
-    ? 38 + defender.upgrades.INTELLIGENCE * 6 + alertPenalty - attacker.upgrades.INTELLIGENCE * 5
-    : 10 + defender.upgrades.INTELLIGENCE * 3 - attacker.upgrades.INTELLIGENCE * 3;
-  const tracePct = Math.min(88, Math.max(6, Math.round(rawTrace)));
+    ? 38 + defender.upgrades.INTELLIGENCE * 6 + alertPenalty - attacker.upgrades.INTELLIGENCE * 5 + proxyStealthBonus
+    : 10 + defender.upgrades.INTELLIGENCE * 3 - attacker.upgrades.INTELLIGENCE * 3 + proxyStealthBonus;
+  const tracePct = Math.min(85, Math.max(5, Math.round(rawTrace)));
 
   return { winPct, tracePct, canExecute: true, requirementErrorFa: null, fuelCost: 0, factorsFa };
 }

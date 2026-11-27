@@ -19,8 +19,10 @@ import {
   executeDiplomaticAction,
   instantBuildInfra,
   instantEmergencyAction,
+  instantLaunchSatellite,
   instantMinorDiplomacyPact,
   instantProduceWeapon,
+  instantRespondFlashpoint,
   instantSellWeapon,
   instantSetChokepoint,
   instantSpotTrade,
@@ -183,7 +185,7 @@ export function createAppServer() {
   }
 
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, version: '4.0.0', uptime: process.uptime() });
+    res.json({ ok: true, version: '5.0.0', uptime: process.uptime() });
   });
 
   io.on('connection', (socket: Socket) => {
@@ -270,7 +272,7 @@ export function createAppServer() {
         if (payload.rawRoomJson) {
           try {
             const parsed = JSON.parse(payload.rawRoomJson) as GameRoomState;
-            if (parsed && parsed.schemaVersion === 4 && parsed.countries?.IR) {
+            if (parsed && (parsed.schemaVersion === 5 || (parsed.schemaVersion as number) === 4) && parsed.countries?.IR) {
               savedRoom = parsed;
             }
           } catch {
@@ -493,6 +495,9 @@ export function createAppServer() {
       }
 
       room.phase = 'PLANNING';
+      room.matchStartedAt = Date.now();
+      room.pausedAt = null;
+      room.accumulatedPausedMs = 0;
       room.isPaused = false;
       room.pausedRemainingMs = null;
       room.phaseEndsAt =
@@ -522,12 +527,17 @@ export function createAppServer() {
 
         if (!room.isPaused) {
           room.isPaused = true;
+          room.pausedAt = Date.now();
           if (room.phaseEndsAt) {
             room.pausedRemainingMs = Math.max(1000, room.phaseEndsAt - Date.now());
             room.phaseEndsAt = null;
           }
         } else {
           room.isPaused = false;
+          if (room.pausedAt) {
+            room.accumulatedPausedMs = (room.accumulatedPausedMs || 0) + (Date.now() - room.pausedAt);
+            room.pausedAt = null;
+          }
           if (room.pausedRemainingMs) {
             room.phaseEndsAt = Date.now() + room.pausedRemainingMs;
             room.pausedRemainingMs = null;
@@ -606,6 +616,31 @@ export function createAppServer() {
         const ctx = getActiveContext(socket.id);
         if (!ctx?.player.countryId) return;
         const res = instantEmergencyAction(ctx.room, ctx.player.countryId, kind);
+        if (res.ok) broadcastRoom(ctx.room);
+        cb?.(res);
+      }
+    );
+
+    socket.on(
+      'game:launch_satellite',
+      (cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void) => {
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const res = instantLaunchSatellite(ctx.room, ctx.player.countryId);
+        if (res.ok) broadcastRoom(ctx.room);
+        cb?.(res);
+      }
+    );
+
+    socket.on(
+      'game:flashpoint_choice',
+      (
+        choice: 'A' | 'B' | 'C',
+        cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void
+      ) => {
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const res = instantRespondFlashpoint(ctx.room, ctx.player.countryId, choice);
         if (res.ok) broadcastRoom(ctx.room);
         cb?.(res);
       }

@@ -22,7 +22,7 @@ export class RoomStore {
       const cutoff = Date.now() - 1000 * 60 * 60 * 96;
       for (const [code, room] of Object.entries(parsed)) {
         if (
-          room.schemaVersion === 4 &&
+          room.schemaVersion === 5 &&
           room.createdAt >= cutoff &&
           room.countries?.IR?.relations &&
           room.minorNations
@@ -77,7 +77,7 @@ export class RoomStore {
       if (!fs.existsSync(filePath)) return null;
       const raw = fs.readFileSync(filePath, 'utf-8');
       const parsed = JSON.parse(raw) as GameRoomState;
-      if (parsed.schemaVersion !== 4 || !parsed.countries?.IR) return null;
+      if (parsed.schemaVersion !== 5 || !parsed.countries?.IR) return null;
       return parsed;
     } catch {
       return null;

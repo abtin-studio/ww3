@@ -98,6 +98,7 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
   const myMil = me ? computeCountryMilitary(me) : null;
   const targetMil = computeCountryMilitary(target);
   const isAlly = Boolean(me?.allies.includes(target.id));
+  const isSecretAlly = Boolean(me?.secretAllies?.includes(target.id));
   const iSanctionThem = Boolean(me && target.sanctionedBy.includes(me.id));
   const intelSnapshot = me?.knownIntel[target.id];
   const rel = me ? me.relations[target.id] ?? 0 : 0;
@@ -128,16 +129,24 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
     costB: number;
   }> = [
     {
+      type: 'PROXY_INSURGENCY',
+      group: 'SPY',
+      title: '🎭 ۱. جنگ نیابتی و تسلیح مخفی شورشیان مرزی',
+      effect:
+        'ارسال سلاح و بودجه به گروه‌های مسلح در مرز هدف: -$18B خسارت، -۱۰٪ رضایت و -۶٪ کنترل مرزی دشمن با کمترین ریسک لو رفتن نام شما!',
+      costB: 20,
+    },
+    {
       type: 'SAT_RECON',
       group: 'SPY',
-      title: '📡 ۱. اشراف اطلاعاتی و ماهواره‌ای',
+      title: '📡 ۲. اشراف اطلاعاتی و ماهواره‌ای',
       effect: 'افشای کامل خزانه، کلاهک‌ها، غذا/آب و ویرانی + ۱۴٪ افزایش دقت حملات نظامی شما.',
       costB: 9,
     },
     {
       type: 'INSURGENCY_PSYOPS',
       group: 'SPY',
-      title: '🔥 ۲. جنگ روانی و تحریک ناآرامی داخلی',
+      title: '🔥 ۳. جنگ روانی و تحریک ناآرامی داخلی',
       effect: 'کاهش ۱۴٪ رضایت مردم و افزایش ۱۱٪ شاخص بحران دولت هدف.',
       costB: 16,
     },
@@ -230,6 +239,16 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
       effect: 'تصرف مرحله‌ای خاک دشمن (حداکثر ۲۴٪ در ماه) + غنیمت خزانه و نفت تا تسخیر کامل کشور در طول چند ماه!',
       costB: 34,
     },
+    ...((target.orbitalSatellites || 0) > 0
+      ? [
+          {
+            type: 'ASAT_STRIKE' as MilitaryOpType,
+            title: `☄️ ۵. شلیک موشک ضدماهواره ASAT به مدار فضا (ماهواره‌های هدف: ${target.orbitalSatellites})`,
+            effect: 'انهدام ماهواره نظامی دشمن در مدار زمین + کور کردن ۳۸٪ شبکه رادار و دقت هدف‌گیری دشمن!',
+            costB: 24,
+          },
+        ]
+      : []),
     {
       type: 'NUCLEAR_STRIKE',
       title: `☢️ ۵. شلیک کلاهک استراتژیک هسته‌ای (موجودی: ${me?.warheads || 0})`,
@@ -610,7 +629,7 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
                   </span>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
                   <button
                     type="button"
                     disabled={hasActiveTruce}
@@ -648,6 +667,32 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
                     </div>
                   </button>
 
+                  {!isSecretAlly && !isAlly ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        sound.playDiplomacy();
+                        onProposeTrade({
+                          to: target.id,
+                          offerType: 'SECRET_DEFENSE_PACT',
+                          amount: 1,
+                          priceB: rel >= 45 ? 14 : 24,
+                          direction: 'PACT',
+                        });
+                      }}
+                      className="p-3 rounded-xl bg-purple-500/20 hover:bg-purple-500/30 border border-purple-400/50 text-purple-200 font-black text-right"
+                    >
+                      <div>🕵️ پیمان دفاعی محرمانه پشت‌پرده (${rel >= 45 ? 14 : 24}B)</div>
+                      <div className="text-[10px] font-normal text-slate-300 mt-0.5">
+                        بدون اعلام در اخبار! غافلگیری و کمین خودکار به محض حمله دشمن
+                      </div>
+                    </button>
+                  ) : isSecretAlly ? (
+                    <div className="p-3 rounded-xl bg-purple-500/20 border border-purple-400/50 text-purple-200 font-black flex items-center justify-center">
+                      🕵️ پیمان دفاعی محرمانه برقرار است ✓
+                    </div>
+                  ) : null}
+
                   {!isAlly ? (
                     <button
                       type="button"
@@ -664,7 +709,7 @@ export const TargetCountryDrawer: React.FC<TargetCountryDrawerProps> = ({
                       className="p-3 rounded-xl bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-400/50 text-indigo-200 font-black text-right"
                     >
                       <div className="flex items-center gap-1">
-                        <ShieldCheck className="w-3.5 h-3.5" /> اتحاد نظامی (${rel >= 55 ? 12 : 26}B)
+                        <ShieldCheck className="w-3.5 h-3.5" /> اتحاد رسمی علنی (${rel >= 55 ? 12 : 26}B)
                       </div>
                       <div className="text-[10px] font-normal text-slate-300 mt-0.5">
                         نیازمند رابطه بالای +۲۰؛ باز شدن ساخت تسلیحات متحد!

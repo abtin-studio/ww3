@@ -2,14 +2,17 @@ import { geoCentroid, GeoPermissibleObjects } from 'd3-geo';
 import * as topojson from 'topojson-client';
 import worldAtlas from 'world-atlas/countries-110m.json' with { type: 'json' };
 import {
+  AIPersonality,
   ChokepointId,
   ChokepointState,
   Coalition,
   CountryId,
   CountryState,
+  GlobalFlashpoint,
   InfrastructureSpec,
   InfrastructureType,
   MinorNationState,
+  SecretMission,
   UpgradeTrack,
   UpgradeTrackSpec,
   WeaponSpec,
@@ -1140,6 +1143,10 @@ type CountrySeed = Omit<
   | 'securityAlertBonus'
   | 'maritimeBlockaded'
   | 'militaryXp'
+  | 'orbitalSatellites'
+  | 'missionBonusScore'
+  | 'secretMissions'
+  | 'secretAllies'
   | 'upgradesUsedThisRound'
   | 'buildsUsedThisRound'
   | 'militaryOrdersUsedThisRound'
@@ -1171,12 +1178,78 @@ type CountrySeed = Omit<
   };
 };
 
+export function createInitialMissionsForCountry(
+  id: CountryId,
+  personality: AIPersonality
+): SecretMission[] {
+  const energyPowers: CountryId[] = ['IR', 'SA', 'RU', 'EG', 'CA', 'AU'];
+  const diplomaticPowers: CountryId[] = ['DE', 'JP', 'FR', 'GB', 'IN', 'BR', 'KR'];
+
+  const firstMission: SecretMission = energyPowers.includes(id)
+    ? {
+        id: `msn-econ-${id}`,
+        kind: 'ENERGY_WEALTH',
+        titleFa: '🛢️ دکترین ابرقدرت انرژی و ثروت ملی',
+        descFa: 'مجموع خزانه ارزی + ذخیره نفت کشور خود را به عدد ۸۵۰ برسانید.',
+        targetValue: 850,
+        currentValue: 0,
+        rewardCashB: 120,
+        rewardScore: 180,
+        completed: false,
+        completedRound: null,
+      }
+    : diplomaticPowers.includes(id) || personality === 'ECONOMIC_POWER'
+    ? {
+        id: `msn-dip-${id}`,
+        kind: 'DIPLOMATIC_PEACE',
+        titleFa: '🕊️ معمار صلح، رفاه و ائتلاف جهانی',
+        descFa: 'به حداقل ۴ متحد رسمی (یا محرمانه) و رضایت مردم بالای ۸۲٪ دست یابید.',
+        targetValue: 4,
+        currentValue: 0,
+        rewardCashB: 120,
+        rewardScore: 180,
+        completed: false,
+        completedRound: null,
+      }
+    : {
+        id: `msn-emp-${id}`,
+        kind: 'REGIONAL_INFLUENCE',
+        titleFa: '🏴 گسترش چتر نفوذ ژئوپولیتیک',
+        descFa: 'حداقل ۳ کشور مستقل جهان را هم‌پیمان راهبردی یا ضمیمه قلمرو خود کنید.',
+        targetValue: 3,
+        currentValue: 0,
+        rewardCashB: 120,
+        rewardScore: 180,
+        completed: false,
+        completedRound: null,
+      };
+
+  const secondMission: SecretMission = {
+    id: `msn-space-${id}`,
+    kind: 'SPACE_TECH_MASTER',
+    titleFa: '🛰️ فرماندهی فضایی و مرجعیت علمی',
+    descFa: 'حداقل ۲ ماهواره فعال در مدار زمین داشته باشید و مجموع سطح دکترین‌های خود را به ۱۸ برسانید.',
+    targetValue: 20,
+    currentValue: 0,
+    rewardCashB: 135,
+    rewardScore: 210,
+    completed: false,
+    completedRound: null,
+  };
+
+  return [firstMission, secondMission];
+}
+
 function makeCountry(seed: CountrySeed): CountryState {
   const isArid = ['SA', 'EG', 'IL', 'IR', 'PK'].includes(seed.id);
   const isWaterRich = ['CA', 'RU', 'BR', 'US', 'CN'].includes(seed.id);
 
   return {
     ...seed,
+    orbitalSatellites: ['US', 'CN', 'RU'].includes(seed.id) ? 1 : 0,
+    missionBonusScore: 0,
+    secretMissions: createInitialMissionsForCountry(seed.id, seed.aiPersonality),
+    secretAllies: [],
     waterReserve: seed.waterReserve ?? (isWaterRich ? 260 : isArid ? 125 : 185),
     waterProduction: seed.waterProduction ?? (isWaterRich ? 92 : isArid ? 42 : 64),
     waterConsumption: seed.waterConsumption ?? (isWaterRich ? 58 : isArid ? 44 : 52),
@@ -2466,6 +2539,53 @@ export const REAL_WORLD_EVENTS: WorldEventTemplate[] = [
     oilDeltaUsd: -5,
     foodDelta: -4,
     tensionDelta: -8,
+  },
+];
+
+export const GLOBAL_FLASHPOINTS_CATALOG: Array<Omit<GlobalFlashpoint, 'round' | 'chosenBy'>> = [
+  {
+    id: 'fp_arctic_lithium',
+    icon: '🧊',
+    titleFa: 'کشف رگه عظیم لیتیوم و عناصر کمیاب در قطب شمال!',
+    descFa: 'ذوب یخ‌های قطبی بزرگ‌ترین ذخیره معدنی قرن را آشکار کرده است؛ واکنش فوری کابینه شما چیست؟',
+    options: [
+      { id: 'A', labelFa: '🔬 سرمایه‌گذاری صنعتی ($24B)', effectFa: '+$48B تولید ناخالص (GDP) و +۱ سطح فناوری', costB: 24 },
+      { id: 'B', labelFa: '⚓ اعزام ناوگان و تصاحب سهم انرژی', effectFa: '+۷۰ نفت و +۶۰ گاز رایگان (+۵ تنش جهانی)', costB: 10 },
+      { id: 'C', labelFa: '🌍 معاهده زیست‌محیطی سازمان ملل', effectFa: '+۱۲٪ رضایت مردم و بهبود رابطه جهانی', costB: 0 },
+    ],
+  },
+  {
+    id: 'fp_rogue_satellite',
+    icon: '🛰️',
+    titleFa: 'سقوط لاشه ماهواره فوق‌محرمانه در آب‌های آزاد!',
+    descFa: 'جعبه سیاه رمزنگاری‌شده یک ماهواره نظامی نسل جدید در اقیانوس ردیابی شده است.',
+    options: [
+      { id: 'A', labelFa: '🕵️ عملیات بازیابی اطلاعاتی ($18B)', effectFa: '+۱ سطح اشراف اطلاعاتی و +۱۵٪ سپر سایبری', costB: 18 },
+      { id: 'B', labelFa: '💰 فروش تراشه‌ها در بازار سیاه', effectFa: 'دریافت فوری +$38B نقد در خزانه', costB: 0 },
+      { id: 'C', labelFa: '📡 مهندسی معکوس راداری ($15B)', effectFa: 'ترمیم ۱۰۰٪ رادارها و +۱۵ تجربه نظامی', costB: 15 },
+    ],
+  },
+  {
+    id: 'fp_semiconductor_shock',
+    icon: '💻',
+    titleFa: 'بحران جهانی زنجیره تامین ابرتراشه‌های هوش مصنوعی!',
+    descFa: 'کمبود شدید تراشه‌های ۲ نانومتری بازار تسلیحات هوشمند و بانک‌های جهانی را تکان داده است.',
+    options: [
+      { id: 'A', labelFa: '🏭 بومی‌سازی خط تولید تراشه ($26B)', effectFa: '+۱ سطح قطب علم و دانشگاه ملی + $25B GDP', costB: 26 },
+      { id: 'B', labelFa: '🛡️ ایمن‌سازی شبکه برق و بانک مرکزی', effectFa: '+۲۰٪ برق سراسری و مصونیت سایبری', costB: 12 },
+      { id: 'C', labelFa: '📦 صادرات مواد اولیه به بازار جهانی', effectFa: '+$34B درآمد ارزی فوری', costB: 0 },
+    ],
+  },
+  {
+    id: 'fp_food_water_summit',
+    icon: '🌾',
+    titleFa: 'نشست اضطراری امنیت آب و غلات سازمان ملل!',
+    descFa: 'تغییرات اقلیمی قیمت مواد غذایی را بالا برده و کشورها به دنبال ذخایر استراتژیک هستند.',
+    options: [
+      { id: 'A', labelFa: '💧 احداث مگاپروژه شیرین‌سازی آب ($20B)', effectFa: '+۹۰ آب، +۹۰ غذا و +۱۰٪ رضایت مردم', costB: 20 },
+      { id: 'B', labelFa: '🤝 اهدای کمک بشردوستانه ($12B)', effectFa: '+۸ رابطه با تمام کشورهای جهان و +۸٪ مشروعیت', costB: 12 },
+      { id: 'C', labelFa: '🏦 احتکار و فروش مازاد در اوج قیمت', effectFa: '+$32B سود تجاری در خزانه (-۴٪ رضایت)', costB: 0 },
+    ],
   },
 ];
 

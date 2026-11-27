@@ -12,6 +12,7 @@ import {
   getMaxCovertOrdersPerRound,
   getMaxMilitaryOrdersPerRound,
   getMaxUpgradesPerRound,
+  getSatelliteLaunchCost,
   getUpgradeNextCost,
 } from '../shared/advisor.js';
 import {
@@ -20,6 +21,7 @@ import {
   createInitialCountries,
   createInitialMinorNations,
   getCalendarLabelFa,
+  GLOBAL_FLASHPOINTS_CATALOG,
   INFRASTRUCTURE_CATALOG,
   INITIAL_CHOKEPOINTS,
   REAL_WORLD_EVENTS,
@@ -30,6 +32,7 @@ import {
   AlertPosture,
   BattleOutcomeLog,
   ChokepointStatus,
+  CinematicReplayEvent,
   CountryId,
   CountryState,
   CovertOpType,
@@ -66,6 +69,62 @@ function clamp(val: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, val));
 }
 
+export function getElapsedMatchMs(room: GameRoomState): number {
+  const base = room.savedElapsedMs || 0;
+  if (!room.matchStartedAt) return base;
+  const endRef = room.isPaused && room.pausedAt ? room.pausedAt : Date.now();
+  return Math.max(base, base + (endRef - room.matchStartedAt - (room.accumulatedPausedMs || 0)));
+}
+
+export function refreshSecretMissions(room: GameRoomState): void {
+  for (const c of Object.values(room.countries)) {
+    if (c.isEliminated || !c.secretMissions) continue;
+    const upgradeSum = Object.values(c.upgrades).reduce((a, b) => a + b, 0);
+    const minorControlled = Object.values(room.minorNations).filter(
+      (m) => m.conqueredBy === c.id || m.alignedWith === c.id
+    ).length;
+
+    for (const m of c.secretMissions) {
+      if (m.kind === 'ENERGY_WEALTH') {
+        m.currentValue = Math.round(c.treasuryB + c.oilReserve);
+      } else if (m.kind === 'DIPLOMATIC_PEACE') {
+        const pactCount = c.allies.length + (c.secretAllies?.length || 0);
+        m.currentValue = c.approval >= 82 ? pactCount : Math.min(m.targetValue - 1, pactCount);
+      } else if (m.kind === 'REGIONAL_INFLUENCE') {
+        m.currentValue = minorControlled;
+      } else if (m.kind === 'SPACE_TECH_MASTER') {
+        const satPart = Math.min(2, c.orbitalSatellites || 0);
+        const docPart = Math.min(18, upgradeSum);
+        m.currentValue = satPart + docPart;
+      }
+
+      if (!m.completed && m.currentValue >= m.targetValue) {
+        m.completed = true;
+        m.completedRound = room.round;
+        c.treasuryB += m.rewardCashB;
+        c.missionBonusScore = (c.missionBonusScore || 0) + m.rewardScore;
+        addIntel(
+          c,
+          room.round,
+          'SUCCESS',
+          `🏅 تکمیل ماموریت مخفی: ${m.titleFa}`,
+          `پاداش ویژه راهبردی (+$${m.rewardCashB}B بودجه و +${m.rewardScore} امتیاز پیروزی) به حساب کشور شما واریز شد!`
+        );
+        if (c.secretMissions.every((x) => x.completed)) {
+          c.missionBonusScore += 150;
+          addIntel(
+            c,
+            room.round,
+            'SUCCESS',
+            '👑 تکمیل هر ۲ ماموریت مخفی کارزار!',
+            'نشان عالی استراتژیست جهانی (+۱۵۰ امتیاز پیروزی نهایی) برای کشور شما ثبت گردید!'
+          );
+        }
+      }
+    }
+  }
+}
+
 export function createNewRoomState(
   roomCode: string,
   roomName: string,
@@ -80,10 +139,14 @@ export function createNewRoomState(
   const cal = getCalendarLabelFa(1);
 
   const room: GameRoomState = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     roomCode,
     roomName: roomName || `اتاق جنگ ${roomCode}`,
     createdAt: Date.now(),
+    matchStartedAt: null,
+    pausedAt: null,
+    accumulatedPausedMs: 0,
+    savedElapsedMs: 0,
     phase: 'LOBBY',
     isPaused: false,
     pausedRemainingMs: null,
@@ -115,6 +178,8 @@ export function createNewRoomState(
       foodPriceIndex: 100,
       globalTension: 20,
     },
+    activeFlashpoint: null,
+    lastRoundReplay: [],
     news: [
       {
         id: uid('news'),
@@ -124,15 +189,15 @@ export function createNewRoomState(
         agencyFa: 'رویترز جهانی / شورای امنیت سازمان ملل',
         category: 'WORLD_EVENT',
         breaking: true,
-        headlineFa: `آغاز کارزار جهانی فرماندهی کل ۴.۰ (${
+        headlineFa: `آغاز کارزار جهانی فرماندهی کل ۵.۰ (${
           settings.difficulty === 'EXTREME'
             ? 'درجه سختی فوق‌سنگین'
             : settings.difficulty === 'HARD'
             ? 'درجه سختی چالشی'
             : 'متعادل'
-        })؛ ۱۹۵ کشور جهان فعال شدند`,
+        })؛ ماموریت‌های مخفی، فرماندهی فضایی و نبرد زنده فعال شدند`,
         bodyFa:
-          'تمامی ۲۰ قدرت راهبردی و ۱۵۵ کشور مستقل جهان در وضعیت فعال قرار گرفتند. سامانه‌های اقتصادی (خزانه، نفت، گاز، غذا و آب)، پژوهش دکترین‌ها، دیپلماسی پویا و ارتش‌های واقعی آماده دریافت فرمان هستند.',
+          'تمامی ۲۰ قدرت راهبردی و ۱۵۵ کشور مستقل جهان فعال شدند. پیمان‌های دفاعی پشت‌پرده، جنگ نیابتی، ماهواره‌های مداری و پخش زنده سینمایی نبردها آماده بهره‌برداری است.',
         involvedCountries: [],
       },
     ],
@@ -145,6 +210,7 @@ export function createNewRoomState(
     rankings: [],
   };
 
+  refreshSecretMissions(room);
   updateRankingsAndDefcon(room);
   return room;
 }
@@ -156,7 +222,11 @@ export function prepareResumedRoom(
   newCode: string
 ): GameRoomState {
   const cloned = JSON.parse(JSON.stringify(savedRoom)) as GameRoomState;
-  cloned.schemaVersion = 4;
+  cloned.schemaVersion = 5;
+  cloned.savedElapsedMs = getElapsedMatchMs(savedRoom);
+  cloned.matchStartedAt = null;
+  cloned.pausedAt = null;
+  cloned.accumulatedPausedMs = 0;
   cloned.roomCode = newCode;
   cloned.createdAt = Date.now();
   cloned.phase = 'LOBBY';
@@ -173,6 +243,9 @@ export function prepareResumedRoom(
     c.isReady = false;
     c.incomingAlertActive = false;
     c.alertPostureConfirmed = false;
+    if (!c.secretAllies) c.secretAllies = [];
+    if (c.orbitalSatellites === undefined) c.orbitalSatellites = 0;
+    if (c.missionBonusScore === undefined) c.missionBonusScore = 0;
   }
 
   cloned.players = [
@@ -187,6 +260,7 @@ export function prepareResumedRoom(
     },
   ];
 
+  refreshSecretMissions(cloned);
   updateRankingsAndDefcon(cloned);
   return cloned;
 }
@@ -199,6 +273,10 @@ export function resetRoomForRematch(room: GameRoomState): void {
   const cal = getCalendarLabelFa(1);
 
   room.phase = 'LOBBY';
+  room.matchStartedAt = null;
+  room.pausedAt = null;
+  room.accumulatedPausedMs = 0;
+  room.savedElapsedMs = 0;
   room.isPaused = false;
   room.pausedRemainingMs = null;
   room.isResumedSave = false;
@@ -216,6 +294,8 @@ export function resetRoomForRematch(room: GameRoomState): void {
     foodPriceIndex: 100,
     globalTension: 20,
   };
+  room.activeFlashpoint = null;
+  room.lastRoundReplay = [];
   room.news = [
     {
       id: uid('news'),
@@ -293,6 +373,7 @@ export function updateRankingsAndDefcon(room: GameRoomState): void {
     const techScore = Math.round(
       upgradeSum * 14 +
         (c.infrastructure.SCIENCE_ACADEMY || 0) * 14 +
+        (c.orbitalSatellites || 0) * 32 +
         c.techLevel * 9 +
         c.upgrades.CYBER_AI * 8 +
         c.upgrades.AEROSPACE * 6
@@ -308,6 +389,7 @@ export function updateRankingsAndDefcon(room: GameRoomState): void {
           territoriesCount * 30 +
           protectorates * 16 +
           (c.coalitionId ? 24 : 0) +
+          (c.missionBonusScore || 0) +
           c.upgrades.INTELLIGENCE * 12 -
           c.sanctionedBy.length * 10
       )
@@ -566,11 +648,127 @@ export function instantUpgradeTrack(
     }
   }
 
+  refreshSecretMissions(room);
   updateRankingsAndDefcon(room);
   return {
     ok: true,
     messageFa: `⭐ «${spec.nameFa}» به سطح ${nextLv}/${spec.maxLevel} ارتقا یافت! (${c.upgradesUsedThisRound}/${maxUps} پژوهش این ماه)`,
   };
+}
+
+export function instantLaunchSatellite(
+  room: GameRoomState,
+  countryId: CountryId
+): { ok: boolean; errorFa?: string; messageFa?: string } {
+  const c = room.countries[countryId];
+  if (!c || c.isEliminated) return { ok: false, errorFa: 'کشور غیرفعال است.' };
+  if (room.phase !== 'PLANNING') return { ok: false, errorFa: 'پرتاب ماهواره فقط در فاز برنامه‌ریزی مجاز است.' };
+  if (room.isPaused) return { ok: false, errorFa: 'بازی متوقف شده است.' };
+  if ((c.orbitalSatellites || 0) >= 3) {
+    return { ok: false, errorFa: 'شبکه مداری شما در سقف ظرفیت (۳ از ۳ ماهواره فعال) قرار دارد!' };
+  }
+  if (c.upgrades.AEROSPACE < 2) {
+    return { ok: false, errorFa: 'پرتاب ماهواره نیازمند «دکترین هوافضا سطح ۲» است!' };
+  }
+  const cost = getSatelliteLaunchCost(c, room.settings.difficulty);
+  if (c.treasuryB < cost) {
+    return { ok: false, errorFa: `بودجه کافی نیست! پرتاب ماهواره $${cost}B نیاز دارد.` };
+  }
+
+  c.treasuryB -= cost;
+  c.orbitalSatellites = (c.orbitalSatellites || 0) + 1;
+  c.radarIntegrity = 100;
+
+  addNews(room, {
+    agencyFa: 'فرماندهی فضایی / رویترز فناوری',
+    category: 'WORLD_EVENT',
+    breaking: false,
+    headlineFa: `🛰️ پرتاب فضایی موفق: ماهواره نظامی-اطلاعاتی شماره ${c.orbitalSatellites} ${c.nameFa} در مدار زمین قرار گرفت!`,
+    bodyFa: 'دقت هدف‌گیری موشکی، سپر هشدار سریع و درآمد ارتباطی این کشور تقویت شد.',
+    involvedCountries: [c.id],
+  });
+
+  refreshSecretMissions(room);
+  updateRankingsAndDefcon(room);
+  return {
+    ok: true,
+    messageFa: `🛰️ ماهواره شماره ${c.orbitalSatellites}/3 با موفقیت در مدار قرار گرفت (+دقت موشکی، +رهگیری و +$10B درآمد ماهانه)!`,
+  };
+}
+
+export function instantRespondFlashpoint(
+  room: GameRoomState,
+  countryId: CountryId,
+  choice: 'A' | 'B' | 'C'
+): { ok: boolean; errorFa?: string; messageFa?: string } {
+  const c = room.countries[countryId];
+  const fp = room.activeFlashpoint;
+  if (!c || c.isEliminated || !fp) return { ok: false, errorFa: 'بحران جهانی فعالی وجود ندارد.' };
+  if (room.isPaused) return { ok: false, errorFa: 'بازی متوقف شده است.' };
+  if (fp.chosenBy[countryId]) return { ok: false, errorFa: 'واکنش کشور شما به این رویداد قبلاً ثبت شده است.' };
+
+  const opt = fp.options.find((o) => o.id === choice);
+  if (!opt) return { ok: false, errorFa: 'گزینه نامعتبر است.' };
+  if (c.treasuryB < opt.costB) {
+    return { ok: false, errorFa: `برای این تصمیم به $${opt.costB}B بودجه نیاز دارید.` };
+  }
+
+  c.treasuryB -= opt.costB;
+  fp.chosenBy[countryId] = choice;
+
+  if (fp.id === 'fp_arctic_lithium') {
+    if (choice === 'A') {
+      c.gdpB += 48;
+      c.techLevel = clamp(c.techLevel + 1, 1, 12);
+    } else if (choice === 'B') {
+      c.oilReserve += 70;
+      c.gasReserve += 60;
+      room.market.globalTension = clamp(room.market.globalTension + 5, 0, 100);
+    } else {
+      c.approval = clamp(c.approval + 12, 0, 100);
+      for (const other of Object.values(room.countries)) {
+        if (other.id !== c.id) adjustRelation(c, other, 5);
+      }
+    }
+  } else if (fp.id === 'fp_rogue_satellite') {
+    if (choice === 'A') {
+      c.intelLevel = clamp(c.intelLevel + 1, 1, 12);
+      c.cyberShield = clamp(c.cyberShield + 15, 0, 99);
+    } else if (choice === 'B') {
+      c.treasuryB += 38;
+    } else {
+      c.radarIntegrity = 100;
+      c.militaryXp += 15;
+    }
+  } else if (fp.id === 'fp_semiconductor_shock') {
+    if (choice === 'A') {
+      c.infrastructure.SCIENCE_ACADEMY = clamp((c.infrastructure.SCIENCE_ACADEMY || 0) + 1, 0, 16);
+      c.gdpB += 25;
+    } else if (choice === 'B') {
+      c.powerGrid = clamp(c.powerGrid + 20, 0, 100);
+      c.securityAlertBonus = clamp(c.securityAlertBonus + 12, 0, 28);
+    } else {
+      c.treasuryB += 34;
+    }
+  } else {
+    if (choice === 'A') {
+      c.waterReserve = (c.waterReserve || 0) + 90;
+      c.foodReserve += 90;
+      c.approval = clamp(c.approval + 10, 0, 100);
+    } else if (choice === 'B') {
+      c.approval = clamp(c.approval + 8, 0, 100);
+      for (const other of Object.values(room.countries)) {
+        if (other.id !== c.id) adjustRelation(c, other, 8);
+      }
+    } else {
+      c.treasuryB += 32;
+      c.approval = clamp(c.approval - 4, 0, 100);
+    }
+  }
+
+  refreshSecretMissions(room);
+  updateRankingsAndDefcon(room);
+  return { ok: true, messageFa: `⚡ تصمیم کابینه در بحران جهانی ثبت شد: ${opt.effectFa}` };
 }
 
 export function instantBuildInfra(
@@ -1433,6 +1631,10 @@ export function queuePlayerOrder(
       costB = 24;
       summaryFa = `🛡️ پاتک بزرگ آزادسازی مناطق اشغالی میهن از دست ${target.nameFa}`;
       expectedImpactFa = 'آزادسازی تا ۲۶٪ خاک اشغالی کشور و افزایش ۱۰٪ روحیه ملی!';
+    } else if (draft.militaryType === 'ASAT_STRIKE') {
+      costB = 24;
+      summaryFa = `☄️ شلیک موشک ضدماهواره (ASAT) به مدار فضایی ${target.nameFa}`;
+      expectedImpactFa = 'انهدام ۱ ماهواره فعال دشمن در مدار زمین + کور کردن ۳۸٪ شبکه رادار هدف!';
     } else if (draft.militaryType === 'NUCLEAR_STRIKE') {
       costB = 45;
       summaryFa = `☢️ شلیک کلاهک استراتژیک هسته‌ای به ${target.nameFa}`;
@@ -1462,6 +1664,11 @@ export function queuePlayerOrder(
         costB = 9;
         summaryFa = `📡 اشراف اطلاعاتی و ماهواره‌ای روی ${target.nameFa}`;
         expectedImpactFa = 'کشف خزانه، کلاهک‌ها، آب/غذا و ویرانی + ۱۴٪ دقت حملات نظامی';
+        break;
+      case 'PROXY_INSURGENCY':
+        costB = 20;
+        summaryFa = `🎭 جنگ نیابتی و تسلیح مخفی گروه‌های مسلح در مرزهای ${target.nameFa}`;
+        expectedImpactFa = 'فرسایش -$18B بودجه نظامی هدف، -۱۰٪ رضایت و -۶٪ امنیت مرزی با ریسک شناسایی بسیار پایین!';
         break;
       case 'INSURGENCY_PSYOPS':
         costB = 16;
@@ -1616,6 +1823,39 @@ export function executeAcceptedTrade(room: GameRoomState, offer: TradeOffer): { 
       bodyFa: 'وضعیت جنگی و تحریم‌های دوجانبه میان دو کشور رسماً پایان یافت و پیمان عدم تعرض ۳ ماهه برقرار شد.',
       involvedCountries: [fromC.id, toC.id],
     });
+    return { ok: true };
+  }
+
+  // 1.5 SECRET BACKROOM DEFENSE PACT (Idea #2 — Zero Public News, Springs Surprise Ambush!)
+  if (offer.offerType === 'SECRET_DEFENSE_PACT') {
+    if (offer.priceB > 0) {
+      if (fromC.treasuryB < offer.priceB) return { ok: false, errorFa: 'بودجه کافی نیست.' };
+      fromC.treasuryB -= offer.priceB;
+      toC.treasuryB += offer.priceB;
+    }
+    if (!fromC.secretAllies) fromC.secretAllies = [];
+    if (!toC.secretAllies) toC.secretAllies = [];
+    if (!fromC.secretAllies.includes(toC.id)) fromC.secretAllies.push(toC.id);
+    if (!toC.secretAllies.includes(fromC.id)) toC.secretAllies.push(fromC.id);
+    fromC.sanctionedBy = fromC.sanctionedBy.filter((id) => id !== toC.id);
+    toC.sanctionedBy = toC.sanctionedBy.filter((id) => id !== fromC.id);
+    adjustRelation(fromC, toC, 22);
+
+    addIntel(
+      fromC,
+      room.round,
+      'SUCCESS',
+      `🕵️ پیمان دفاعی محرمانه با ${toC.nameFa} منعقد شد`,
+      'این پیمان از دید سایر بازیکنان کاملاً پنهان است؛ به محض حمله نظامی دشمن به یکی از دو کشور، پدافند و جنگنده‌های متحد مخفی به صورت غافلگیرکننده وارد نبرد می‌شوند!'
+    );
+    addIntel(
+      toC,
+      room.round,
+      'SUCCESS',
+      `🕵️ پیمان دفاعی محرمانه با ${fromC.nameFa} منعقد شد`,
+      'این معاهده در اخبار اعلام نشد؛ در نخستین حمله دشمن، چتر دفاعی مشترک به شکل غافلگیرکننده فعال خواهد شد!'
+    );
+    refreshSecretMissions(room);
     return { ok: true };
   }
 
@@ -1930,6 +2170,7 @@ export function resolveCurrentRound(room: GameRoomState): void {
   const resolvedRoundNum = room.round;
   const resolvedMonthLabel = room.calendarLabelFa;
   const newVisuals: MapVisualEvent[] = [];
+  const newReplays: CinematicReplayEvent[] = [];
   const roundBattles: BattleOutcomeLog[] = [];
   const worldHighlightsFa: string[] = [];
   const seadPenalty: Partial<Record<CountryId, number>> = {};
@@ -2050,6 +2291,40 @@ export function resolveCurrentRound(room: GameRoomState): void {
       let newsHeadline = '';
 
       switch (ord.covertType) {
+        case 'PROXY_INSURGENCY': {
+          const drainB = Math.min(target.treasuryB, 18);
+          target.treasuryB -= drainB;
+          target.approval = clamp(target.approval - 10, 0, 100);
+          target.devastation = clamp(target.devastation + 11, 0, prevDevs[target.id] + 45);
+          const minAllowedInt = Math.max(0, startIntegrity[target.id] - 24);
+          target.integrityPct = clamp(target.integrityPct - 6, minAllowedInt, 100);
+          actorDetail = `گروه‌های مسلح نیابتی در مرزهای ${target.nameFa} عملیات گسترده‌ای اجرا کردند (-$${drainB}B فرسایش مالی و -۶٪ کنترل مرزی هدف)!${
+            traced ? ' (مسیر ارسال سلاح لو رفت!)' : ' (حمایت شما کاملاً مخفی ماند ✓)'
+          }`;
+          targetTitle = 'درگیری با گروه‌های مسلح نیابتی در مرزها!';
+          targetDetail = `-$${drainB}B هزینه سرکوب، -۱۰٪ رضایت و ناامنی مرزی (${attackerLabelForTarget})`;
+          newsHeadline = traced
+            ? `🎭 درگیری شدید گروه‌های مسلح در مرزهای ${target.nameFa}؛ کشف محموله تسلیحاتی ارسالی از ${actor.nameFa}!`
+            : `🎭 حملات غافلگیرکننده گروه‌های مسلح نیابتی در مرزهای ${target.nameFa}؛ حامی خارجی عملیات ناشناس ماند!`;
+          newReplays.push({
+            id: uid('rep-prx'),
+            round: resolvedRoundNum,
+            from: actor.coordinates,
+            to: target.coordinates,
+            attackerId: traced ? actor.id : null,
+            attackerNameFa: traced ? actor.nameFa : 'حامی ناشناس',
+            defenderId: target.id,
+            targetNameFa: target.nameFa,
+            kind: 'PROXY',
+            succeeded: true,
+            intercepted: false,
+            headlineFa: newsHeadline,
+            impactBadgeFa: '🎭 شورش مسلحانه نیابتی در مرز!',
+            secretActorOnly: !traced,
+          });
+          break;
+        }
+
         case 'BLACKOUT_VIRUS':
           actorDetail = `رادارهای پدافندی ${target.nameFa} کور شد و ۲۶٪ شبکه برق آن قطع گردید!${traced ? ' (ردپای سایبری لو رفت!)' : ' (بدون ردپا ✓)'}`;
           targetTitle = 'حمله سایبری Blackout به شبکه برق و رادار';
@@ -2311,12 +2586,13 @@ export function resolveCurrentRound(room: GameRoomState): void {
   // 3. RESOLVE MAJOR MILITARY OPERATIONS (WITH ANTI-1-MONTH WIPEOUT CAP!)
   // =========================================================================
   const priorityMap: Record<MilitaryOpType, number> = {
-    AIR_SORTIE: 1,
-    NAVAL_BLOCKADE_STRIKE: 2,
-    MISSILE_DRONE_STRIKE: 3,
-    LIBERATION_COUNTEROFFENSIVE: 4,
-    GROUND_CONQUEST: 5,
-    NUCLEAR_STRIKE: 6,
+    ASAT_STRIKE: 1,
+    AIR_SORTIE: 2,
+    NAVAL_BLOCKADE_STRIKE: 3,
+    MISSILE_DRONE_STRIKE: 4,
+    LIBERATION_COUNTEROFFENSIVE: 5,
+    GROUND_CONQUEST: 6,
+    NUCLEAR_STRIKE: 7,
   };
 
   const milOrders = allOrders
@@ -2338,6 +2614,7 @@ export function resolveCurrentRound(room: GameRoomState): void {
       startIntegrity,
       prevDevs,
       newVisuals,
+      newReplays,
       roundBattles,
       summaries,
       worldHighlightsFa,
@@ -2365,6 +2642,7 @@ export function resolveCurrentRound(room: GameRoomState): void {
           startIntegrity,
           prevDevs,
           newVisuals,
+          newReplays,
           roundBattles,
           summaries,
           worldHighlightsFa,
@@ -2597,7 +2875,9 @@ export function resolveCurrentRound(room: GameRoomState): void {
   }
 
   room.visualEvents = newVisuals;
+  room.lastRoundReplay = newReplays.slice(0, 14);
   room.battles = [...roundBattles, ...room.battles].slice(0, 40);
+  refreshSecretMissions(room);
   updateRankingsAndDefcon(room);
 
   const humanPlayersWithCountries = room.players.filter((p) => p.countryId !== null);
@@ -2612,6 +2892,9 @@ export function resolveCurrentRound(room: GameRoomState): void {
     humanPlayersWithCountries.some((p) => p.countryId && room.countries[p.countryId]?.isEliminated);
 
   if (room.round >= room.settings.maxRounds || allHumansEliminated || soleHumanVictorInPvP) {
+    room.savedElapsedMs = getElapsedMatchMs(room);
+    room.matchStartedAt = null;
+    room.pausedAt = null;
     room.phase = 'FINISHED';
     room.isPaused = false;
     room.pausedRemainingMs = null;
@@ -2641,6 +2924,18 @@ export function resolveCurrentRound(room: GameRoomState): void {
 
   room.round += 1;
   room.calendarLabelFa = getCalendarLabelFa(room.round);
+  // Rotate Interactive Global Flashpoints (Idea #4 — spawns on Round 2, 5, 8, 11...)
+  if (room.round % 3 === 2) {
+    const tpl =
+      GLOBAL_FLASHPOINTS_CATALOG[Math.floor((room.round - 2) / 3) % GLOBAL_FLASHPOINTS_CATALOG.length];
+    room.activeFlashpoint = {
+      ...tpl,
+      round: room.round,
+      chosenBy: {},
+    };
+  } else {
+    room.activeFlashpoint = null;
+  }
   room.phase = 'PLANNING';
   room.phaseEndsAt =
     room.settings.planningTimerSec > 0 ? Date.now() + room.settings.planningTimerSec * 1000 : null;
@@ -2664,6 +2959,7 @@ function executeRealisticMilitaryClash(
   startIntegrity: Record<CountryId, number>,
   startDevastation: Record<CountryId, number>,
   newVisuals: MapVisualEvent[],
+  newReplays: CinematicReplayEvent[],
   roundBattles: BattleOutcomeLog[],
   summaries: Record<CountryId, RoundSummaryForCountry>,
   worldHighlightsFa: string[],
@@ -2678,9 +2974,148 @@ function executeRealisticMilitaryClash(
   if (opType !== 'LIBERATION_COUNTEROFFENSIVE') {
     actor.allies = actor.allies.filter((id) => id !== target.id);
     target.allies = target.allies.filter((id) => id !== actor.id);
+    actor.secretAllies = (actor.secretAllies || []).filter((id) => id !== target.id);
+    target.secretAllies = (target.secretAllies || []).filter((id) => id !== actor.id);
   }
   actor.militaryXp += 15;
   target.militaryXp += 10;
+
+  // === SECRET BACKROOM DEFENSE PACT AMBUSH! (Idea #2!) ===
+  let secretAmbushBonus = 0;
+  let sprungAlly: CountryState | null = null;
+  if (
+    !isCounterSalvo &&
+    opType !== 'LIBERATION_COUNTEROFFENSIVE' &&
+    target.secretAllies &&
+    target.secretAllies.length > 0
+  ) {
+    const validAllyId = target.secretAllies.find(
+      (aid) => aid !== actor.id && room.countries[aid] && !room.countries[aid].isEliminated
+    );
+    if (validAllyId) {
+      sprungAlly = room.countries[validAllyId];
+      secretAmbushBonus = 24;
+      // Convert secret pact to active unveiled alliance and remove secret trap once sprung
+      target.secretAllies = target.secretAllies.filter((id) => id !== sprungAlly!.id);
+      sprungAlly.secretAllies = (sprungAlly.secretAllies || []).filter((id) => id !== target.id);
+      if (!target.allies.includes(sprungAlly.id)) target.allies.push(sprungAlly.id);
+      if (!sprungAlly.allies.includes(target.id)) sprungAlly.allies.push(target.id);
+
+      const ambushLost = loseRandomWeaponUnit(actor, ['FIGHTER', 'BOMBER', 'ARMOR', 'NAVAL']);
+      const ambushHl = `💥 کمین استراتژیک! پیمان دفاعی مخفی افشا شد و جنگنده‌های ${sprungAlly.nameFa} به دفاع از ${target.nameFa} به نیروهای مهاجم ${actor.nameFa} یورش بردند!${
+        ambushLost ? ` (انهدام ۱× ${ambushLost})` : ''
+      }`;
+      worldHighlightsFa.push(ambushHl);
+      addNews(room, {
+        agencyFa: 'رویترز فوری (افشای پیمان محرمانه!)',
+        category: 'WAR',
+        breaking: true,
+        headlineFa: ambushHl,
+        bodyFa: 'پدافند مشترک دو کشور با غافلگیری کامل مهاجم وارد عمل شد.',
+        involvedCountries: [sprungAlly.id, target.id, actor.id],
+      });
+      newReplays.push({
+        id: uid('rep-amb'),
+        round: room.round,
+        from: sprungAlly.coordinates,
+        to: target.coordinates,
+        attackerId: sprungAlly.id,
+        attackerNameFa: sprungAlly.nameFa,
+        defenderId: actor.id,
+        targetNameFa: target.nameFa,
+        kind: 'SECRET_AMBUSH',
+        succeeded: true,
+        intercepted: false,
+        secretAllyId: sprungAlly.id,
+        secretAllyNameFa: sprungAlly.nameFa,
+        headlineFa: ambushHl,
+        impactBadgeFa: `🕵️ ورود غافلگیرکننده جنگنده‌های ${sprungAlly.nameFa}!`,
+      });
+    }
+  }
+
+  // === 0a. SPACE COMMAND: ANTI-SATELLITE (ASAT) STRIKE (Idea #5!) ===
+  if (opType === 'ASAT_STRIKE') {
+    const winPct = Math.max(12, evaluateMilitaryOpDetails(actor, target, opType, room.round, room.minorNations).winPct - secretAmbushBonus * 0.5);
+    const succeeded = (target.orbitalSatellites || 0) > 0 && Math.random() * 100 < winPct;
+
+    newVisuals.push({
+      id: uid('vis-asat'),
+      round: room.round,
+      from: actor.coordinates,
+      to: target.coordinates,
+      fromCountry: actor.id,
+      toCountry: target.id,
+      kind: 'MISSILE',
+      labelFa: succeeded ? '☄️ انهدام ماهواره در مدار!' : '🛡️ انحراف موشک ضدماهواره',
+      intercepted: !succeeded,
+    });
+
+    const hl = succeeded
+      ? `🛰️ جنگ فضایی: موشک ضدماهواره (ASAT) ${actor.nameFa} ماهواره نظامی ${target.nameFa} را در مدار زمین منهدم کرد!`
+      : `🛡️ جنگ الکترونیک فضایی ${target.nameFa} موشک ضدماهواره شلیک‌شده از ${actor.nameFa} را منحرف کرد!`;
+
+    newReplays.push({
+      id: uid('rep-asat'),
+      round: room.round,
+      from: actor.coordinates,
+      to: target.coordinates,
+      attackerId: actor.id,
+      attackerNameFa: actor.nameFa,
+      defenderId: target.id,
+      targetNameFa: target.nameFa,
+      kind: 'ASAT',
+      succeeded,
+      intercepted: !succeeded,
+      headlineFa: hl,
+      impactBadgeFa: succeeded ? '🛰️ انفجار ماهواره در مدار زمین!' : '🛡️ دفع موشک ضدماهواره!',
+    });
+
+    if (succeeded) {
+      target.orbitalSatellites = Math.max(0, (target.orbitalSatellites || 0) - 1);
+      target.radarIntegrity = clamp(target.radarIntegrity - 38, 12, 100);
+      seadPenalty[target.id] = (seadPenalty[target.id] || 0) + 25;
+      summaries[actor.id].myOperations.push({
+        titleFa: `شلیک ضدماهواره (ASAT) به مدار ${target.nameFa}`,
+        targetId: target.id,
+        targetNameFa: target.nameFa,
+        succeeded: true,
+        detailFa: `${hl} (-۱ ماهواره دشمن و -۳۸٪ اشراف راداری هدف)`,
+      });
+      summaries[target.id].incomingAttacks.push({
+        attackerId: actor.id,
+        attackerLabelFa: actor.nameFa,
+        titleFa: '☄️ انهدام ماهواره کشور در مدار زمین!',
+        repelled: false,
+        detailFa: hl,
+      });
+      worldHighlightsFa.push(hl);
+      addNews(room, {
+        agencyFa: 'فرماندهی فضایی / رویترز',
+        category: 'WAR',
+        breaking: true,
+        headlineFa: hl,
+        bodyFa: 'ارتباطات GPS و شبکه رادار هشدار سریع هدف دچار اختلال شدید شد.',
+        involvedCountries: [actor.id, target.id],
+      });
+    } else {
+      summaries[actor.id].myOperations.push({
+        titleFa: `شلیک ضدماهواره به ${target.nameFa}`,
+        targetId: target.id,
+        targetNameFa: target.nameFa,
+        succeeded: false,
+        detailFa: hl,
+      });
+      summaries[target.id].incomingAttacks.push({
+        attackerId: actor.id,
+        attackerLabelFa: actor.nameFa,
+        titleFa: 'دفع حمله ضدماهواره‌ای دشمن',
+        repelled: true,
+        detailFa: hl,
+      });
+    }
+    return;
+  }
 
   // === 0. LIBERATION COUNTEROFFENSIVE ===
   if (opType === 'LIBERATION_COUNTEROFFENSIVE') {
@@ -2735,7 +3170,11 @@ function executeRealisticMilitaryClash(
   if (opType === 'NUCLEAR_STRIKE' && actor.warheads > 0) {
     actor.warheads -= 1;
     room.market.globalTension = 100;
-    const interceptChance = Math.max(6, (defMil.interceptRate - (seadPenalty[target.id] || 0)) * 0.36 + defMil.antiBallisticUnits * 3);
+    const interceptChance = Math.max(
+      6,
+      (defMil.interceptRate + secretAmbushBonus - (seadPenalty[target.id] || 0)) * 0.36 +
+        defMil.antiBallisticUnits * 3
+    );
     const intercepted = Math.random() * 100 < interceptChance;
 
     newVisuals.push({
@@ -2748,6 +3187,23 @@ function executeRealisticMilitaryClash(
       kind: 'NUCLEAR',
       labelFa: intercepted ? 'رهگیری کلاهک هسته‌ای!' : '☢️ اصابت کلاهک هسته‌ای!',
       intercepted,
+    });
+    newReplays.push({
+      id: uid('rep-nuk'),
+      round: room.round,
+      from: actor.coordinates,
+      to: target.coordinates,
+      attackerId: actor.id,
+      attackerNameFa: actor.nameFa,
+      defenderId: target.id,
+      targetNameFa: target.nameFa,
+      kind: 'NUCLEAR',
+      succeeded: !intercepted,
+      intercepted,
+      headlineFa: intercepted
+        ? `🛡️ سپر ضدبالستیک ${target.nameFa} کلاهک اتمی ${actor.nameFa} را در لبه فضا شکار کرد!`
+        : `☢️ اصابت کلاهک استراتژیک هسته‌ای ${actor.nameFa} به خاک ${target.nameFa}!`,
+      impactBadgeFa: intercepted ? '🛡️ انهدام کلاهک اتمی در جو!' : '☢️ انفجار هسته‌ای استراتژیک!',
     });
 
     if (intercepted) {
@@ -2782,8 +3238,53 @@ function executeRealisticMilitaryClash(
   }
 
   room.market.globalTension = clamp(room.market.globalTension + 8, 0, 100);
-  const winPct = evaluateMilitaryOpDetails(actor, target, opType, room.round, room.minorNations).winPct;
+  const baseWinPct = evaluateMilitaryOpDetails(actor, target, opType, room.round, room.minorNations).winPct;
+  const winPct = Math.max(10, baseWinPct - secretAmbushBonus);
   const succeeded = Math.random() * 100 < winPct;
+
+  const replayKindMap: Record<string, CinematicReplayEvent['kind']> = {
+    AIR_SORTIE: 'AIR',
+    NAVAL_BLOCKADE_STRIKE: 'NAVAL',
+    GROUND_CONQUEST: 'GROUND',
+    MISSILE_DRONE_STRIKE: 'MISSILE',
+  };
+  newReplays.push({
+    id: uid('rep-mil'),
+    round: room.round,
+    from: actor.coordinates,
+    to: target.coordinates,
+    attackerId: actor.id,
+    attackerNameFa: actor.nameFa,
+    defenderId: target.id,
+    targetNameFa: target.nameFa,
+    kind: replayKindMap[opType] || 'MISSILE',
+    succeeded: isCounterSalvo ? true : succeeded,
+    intercepted: isCounterSalvo ? false : !succeeded,
+    headlineFa:
+      opType === 'AIR_SORTIE'
+        ? succeeded
+          ? `✈️ شکسته شدن خط پدافند؛ بمباران هوایی ${target.nameFa} توسط اسکادران ${actor.nameFa}!`
+          : `🛡️ جنگنده‌های رهگیر ${target.nameFa} اسکادران مهاجم ${actor.nameFa} را دفع کردند!`
+        : opType === 'NAVAL_BLOCKADE_STRIKE'
+        ? succeeded
+          ? `⚓ ناوگان دریایی ${actor.nameFa} بنادر استراتژیک ${target.nameFa} را به محاصره درآورد!`
+          : `🛡️ موشک‌های ساحلی ${target.nameFa} ناوگان مهاجم ${actor.nameFa} را عقب راندند!`
+        : opType === 'GROUND_CONQUEST'
+        ? succeeded
+          ? `🚜 پیشروی ستون‌های زرهی ${actor.nameFa} در خطوط مرزی ${target.nameFa}!`
+          : `🛡️ مقاومت سرسختانه زرهی ${target.nameFa} تهاجم زمینی ${actor.nameFa} را درهم شکست!`
+        : succeeded || isCounterSalvo
+        ? `🚀 عبور موشک‌های ${actor.nameFa} از سپر پدافندی و اصابت به تاسیسات ${target.nameFa}!`
+        : `🛡️ رهگیری تماشایی امواج موشکی و پهپادی ${actor.nameFa} در آسمان ${target.nameFa}!`,
+    impactBadgeFa:
+      succeeded || isCounterSalvo
+        ? opType === 'GROUND_CONQUEST'
+          ? '🏴 تصرف خطوط مرزی!'
+          : opType === 'NAVAL_BLOCKADE_STRIKE'
+          ? '⚓ قفل کامل بنادر!'
+          : '💥 اصابت مستقیم به هدف!'
+        : '🛡️ رهگیری موفق پدافند!',
+  });
 
   // === 2. AIR SORTIE ===
   if (opType === 'AIR_SORTIE') {
@@ -3186,6 +3687,8 @@ export function sanitizeRoomForPlayer(room: GameRoomState, viewerPlayerId: strin
       ...c,
       treasuryB: isAlly || hasRecentIntel ? c.treasuryB : Math.round(c.treasuryB / 50) * 50,
       warheads: isAlly || hasRecentIntel ? c.warheads : c.nuclearProgress >= 100 ? 1 : 0,
+      secretAllies: myCountryId && c.secretAllies?.includes(myCountryId) ? [myCountryId] : [],
+      secretMissions: [],
       orders: [],
       intelReports: [],
       knownIntel: {},
@@ -3197,6 +3700,11 @@ export function sanitizeRoomForPlayer(room: GameRoomState, viewerPlayerId: strin
   const visibleVisualEvents = room.visualEvents.filter((ev) => {
     if (!ev.secretActorOnly) return true;
     return myCountryId !== null && ev.fromCountry === myCountryId;
+  });
+
+  const visibleReplayEvents = (room.lastRoundReplay || []).filter((ev) => {
+    if (!ev.secretActorOnly) return true;
+    return myCountryId !== null && ev.attackerId === myCountryId;
   });
 
   const visibleMessages = room.messages.filter((m) => {
@@ -3217,6 +3725,7 @@ export function sanitizeRoomForPlayer(room: GameRoomState, viewerPlayerId: strin
     ...room,
     countries: maskedCountries,
     visualEvents: visibleVisualEvents,
+    lastRoundReplay: visibleReplayEvents,
     messages: visibleMessages,
     trades: visibleTrades,
   };
