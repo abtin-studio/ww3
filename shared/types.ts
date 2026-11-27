@@ -75,7 +75,14 @@ export type UpgradeTrack =
   | 'CYBER_AI'
   | 'INTELLIGENCE'
   | 'INDUSTRY'
+  | 'ECONOMIC_SOVEREIGNTY'
+  | 'SPACE_ORBITAL'
   | 'NUCLEAR';
+
+export interface UpgradeMilestoneBadge {
+  level: number;
+  labelFa: string;
+}
 
 export interface UpgradeTrackSpec {
   id: UpgradeTrack;
@@ -85,6 +92,24 @@ export interface UpgradeTrackSpec {
   maxLevel: number;
   perLevelBonusFa: string;
   milestonesFa: string;
+  milestoneBadges: UpgradeMilestoneBadge[];
+}
+
+export type SpaceConstellationId =
+  | 'RECON_OPTICAL'
+  | 'GNSS_NAVI'
+  | 'SBIRS_SHIELD'
+  | 'SATCOM_EW';
+
+export interface SpaceConstellationSpec {
+  id: SpaceConstellationId;
+  nameFa: string;
+  icon: string;
+  baseCostB: number;
+  maxLevel: number; // 3
+  minSpaceDoctrineByLevel: [number, number, number, number]; // index 1..3
+  roleTagFa: string;
+  perLevelBonusFa: string;
 }
 
 export type WeaponCategory =
@@ -103,7 +128,7 @@ export interface WeaponSpec {
   nameEn: string;
   originCountry: CountryId;
   category: WeaponCategory;
-  roleTagFa: string; // e.g. 'رادارگریز ضدپدافند' | 'هایپرسونیک سپرشکن' | 'شکارچی ناو'
+  roleTagFa: string;
   unitCostB: number;
   oilUsePerRound: number;
   attackPower: number;
@@ -250,33 +275,76 @@ export type EmergencyActionKind =
   | 'NATIONAL_RELIEF';
 
 export type DiplomaticActionKind =
-  | 'IMPROVE_RELATIONS' // Diplomatic envoy & goodwill ($14B -> +18 relation)
-  | 'THREATEN_ULTIMATUM' // Military coercion: forces weaker rival to back down / lift sanction / open strait!
-  | 'SOW_DISCORD'; // Covertly pits targetCountry against thirdCountry (-35 relation between them & breaks alliance!)
+  | 'IMPROVE_RELATIONS'
+  | 'THREATEN_ULTIMATUM'
+  | 'SOW_DISCORD';
 
 export type UltimatumDemand =
   | 'STOP_ATTACKS'
   | 'LIFT_SANCTION'
   | 'OPEN_CHOKEPOINT';
 
-export type SecretMissionKind =
-  | 'ENERGY_WEALTH'
-  | 'DIPLOMATIC_PEACE'
-  | 'REGIONAL_INFLUENCE'
-  | 'SPACE_TECH_MASTER';
+export type StrategicRequestKind =
+  | 'OPEN_CHOKEPOINT'
+  | 'BLOCKADE_CHOKEPOINT'
+  | 'FORM_FRIENDSHIP'
+  | 'JOINT_MILITARY_STRIKE'
+  | 'JOINT_CYBER_SABOTAGE'
+  | 'IMPOSE_SANCTION'
+  | 'LIFT_SANCTION_ON_ME'
+  | 'CEASEFIRE_WITH_ME'
+  | 'ECONOMIC_AID';
 
-export interface SecretMission {
+export type RequestLeverageMode = 'DIPLOMATIC_INCENTIVE' | 'COERCIVE_PRESSURE';
+
+export interface StrategicRequest {
   id: string;
-  kind: SecretMissionKind;
+  round: number;
+  from: CountryId;
+  to: CountryId;
+  kind: StrategicRequestKind;
+  leverage: RequestLeverageMode;
+  thirdCountry?: CountryId;
+  chokepointId?: ChokepointId;
+  offeredCashB: number;
+  aiAcceptancePct: number;
+  summaryFa: string;
+  status: 'PENDING' | 'ACCEPTED' | 'REJECTED';
+  responseReasonFa?: string;
+}
+
+export type DynamicMissionKind =
+  | 'ENERGY_EXPORT_DRIVE'
+  | 'DIPLOMATIC_NETWORK'
+  | 'REGIONAL_INFLUENCE'
+  | 'SPACE_CONSTELLATION'
+  | 'DOCTRINE_BREAKTHROUGH'
+  | 'STRATEGIC_DETERRENCE'
+  | 'SANCTION_RESISTANCE'
+  | 'NATIONAL_RECONSTRUCTION'
+  | 'WELFARE_PROSPERITY'
+  | 'COVERT_INTEL_SWEEP';
+
+export type SecretMissionKind = DynamicMissionKind;
+
+export interface DynamicMission {
+  id: string;
+  kind: DynamicMissionKind;
+  categoryFa: string;
+  icon: string;
   titleFa: string;
   descFa: string;
   targetValue: number;
   currentValue: number;
   rewardCashB: number;
   rewardScore: number;
+  rewardBuffFa: string;
   completed: boolean;
   completedRound: number | null;
+  createdRound: number;
 }
+
+export type SecretMission = DynamicMission;
 
 export interface FlashpointOption {
   id: 'A' | 'B' | 'C';
@@ -304,7 +372,12 @@ export type ReplayEventKind =
   | 'ASAT'
   | 'PROXY'
   | 'SECRET_AMBUSH'
-  | 'CYBER';
+  | 'CYBER'
+  | 'UN_DECISION'
+  | 'CHOKEPOINT'
+  | 'SPACE_LAUNCH'
+  | 'DIPLOMACY_SHOCK'
+  | 'WORLD_HEADLINE';
 
 export interface CinematicReplayEvent {
   id: string;
@@ -322,6 +395,7 @@ export interface CinematicReplayEvent {
   secretAllyNameFa?: string;
   headlineFa: string;
   impactBadgeFa: string;
+  categoryLabelFa?: string;
   secretActorOnly?: boolean;
 }
 
@@ -340,7 +414,7 @@ export interface MinorNationState {
   garrisonPower: number;
   stability: number;
   alignedWith: CountryId | null;
-  occupierId: CountryId | null; // Invader currently occupying part of this nation
+  occupierId: CountryId | null;
   occupationPct: number; // 0..100% (100% = Fully Annexed!)
   conqueredBy: CountryId | null;
 }
@@ -383,7 +457,7 @@ export interface CountryState {
   eliminatedRound: number | null;
   eliminatedReasonFa: string | null;
   conqueredBy: CountryId | null;
-  occupierId: CountryId | null; // Tracks chief invader occupying border provinces
+  occupierId: CountryId | null;
 
   // Economy & 5 Strategic Resources (Treasury, Oil, Gas, Food, Water + Uranium)
   treasuryB: number;
@@ -415,13 +489,16 @@ export interface CountryState {
   techLevel: number; // 1 - 12
   nuclearProgress: number; // 0 - 100
   warheads: number;
-  orbitalSatellites: number; // 0 - 3 Space Command satellites
+  orbitalSatellites: number; // Total active satellites across all 4 constellations (0 - 12)
+  constellations: Record<SpaceConstellationId, number>; // 0 - 3 each
   commanderBuff: number;
   securityAlertBonus: number;
   maritimeBlockaded: boolean;
   militaryXp: number;
   missionBonusScore: number;
-  secretMissions: SecretMission[];
+  completedMissionsCount: number;
+  missionRerollsUsedThisRound: number;
+  secretMissions: DynamicMission[];
 
   // Monthly Pacing & Operational Quotas
   upgradesUsedThisRound: number;
@@ -429,8 +506,11 @@ export interface CountryState {
   militaryOrdersUsedThisRound: number;
   covertOrdersUsedThisRound: number;
   assassinationsUsedThisRound: number;
+  spotSalesUsedThisRound: number;
+  requestsSentToThisRound: CountryId[];
+  sabotageCooldowns: Partial<Record<string, number>>;
 
-  // 8 Level-Up National Progression Pillars (Lv.0 -> Lv.10)
+  // 10 Level-Up National Progression Doctrines (Lv.0 -> Lv.10)
   upgrades: Record<UpgradeTrack, number>;
 
   // Active Infrastructures, Damaged Ruins & Arsenal
@@ -441,9 +521,9 @@ export interface CountryState {
   // Diplomacy, Bilateral Relations (-100..+100), Truces, Secret Defense Pacts & Coalitions
   coalitionId: string | null;
   relations: Record<CountryId, number>;
-  nonAggressionPacts: Partial<Record<CountryId, number>>; // CountryId -> expiresAtRound
+  nonAggressionPacts: Partial<Record<CountryId, number>>;
   allies: CountryId[];
-  secretAllies: CountryId[]; // Hidden backroom defense pacts!
+  secretAllies: CountryId[];
   sanctionedBy: CountryId[];
   airspaceOpenTo: CountryId[];
   airspaceClosedTo: CountryId[];
@@ -554,6 +634,7 @@ export interface UNResolution {
   votesYes: CountryId[];
   votesNo: CountryId[];
   vetoedBy: CountryId | null;
+  vetoReasonFa?: string | null;
   status: 'ACTIVE' | 'PASSED' | 'FAILED' | 'VETOED';
 }
 
@@ -611,7 +692,7 @@ export interface CreatorCheatPayload {
 }
 
 export interface GameRoomState {
-  schemaVersion: 5;
+  schemaVersion: 6;
   roomCode: string;
   roomName: string;
   createdAt: number;
@@ -641,6 +722,7 @@ export interface GameRoomState {
   battles: BattleOutcomeLog[];
   visualEvents: MapVisualEvent[];
   trades: TradeOffer[];
+  strategicRequests: StrategicRequest[];
   messages: ChatMessage[];
   resolutions: UNResolution[];
   winnerSummaryFa: string | null;

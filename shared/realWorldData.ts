@@ -8,11 +8,14 @@ import {
   Coalition,
   CountryId,
   CountryState,
+  DynamicMission,
   GlobalFlashpoint,
   InfrastructureSpec,
   InfrastructureType,
   MinorNationState,
   SecretMission,
+  SpaceConstellationId,
+  SpaceConstellationSpec,
   UpgradeTrack,
   UpgradeTrackSpec,
   WeaponSpec,
@@ -23,78 +26,189 @@ export const ALL_COUNTRY_IDS: CountryId[] = [
   'IN', 'PK', 'UA', 'JP', 'KP', 'KR', 'EG', 'BR', 'CA', 'AU',
 ];
 
+export const SPACE_CONSTELLATIONS_CATALOG: Record<SpaceConstellationId, SpaceConstellationSpec> = {
+  RECON_OPTICAL: {
+    id: 'RECON_OPTICAL',
+    nameFa: 'منظومه جاسوسی اپتیکال و رادار مداری (Keyhole / SAR)',
+    icon: '🔭',
+    baseCostB: 38,
+    maxLevel: 3,
+    minSpaceDoctrineByLevel: [0, 0, 3, 6],
+    roleTagFa: 'اشراف خودکار بدون مصرف سهمیه',
+    perLevelBonusFa: 'هر ماه رصد خودکار ۱ رقیب بزرگ بدون هزینه + ۷٪ دقت عملیات نظامی و جاسوسی در هر سطح',
+  },
+  GNSS_NAVI: {
+    id: 'GNSS_NAVI',
+    nameFa: 'منظومه ناوبری نظامی مستقل (GPS / GLONASS / BeiDou)',
+    icon: '🧭',
+    baseCostB: 36,
+    maxLevel: 3,
+    minSpaceDoctrineByLevel: [0, 0, 3, 6],
+    roleTagFa: 'نقطه‌زنی موشکی و صرفه‌جویی سوخت',
+    perLevelBonusFa: '+۶٪ شانس اصابت موشکی/هوایی و -۱۰٪ مصرف سوخت عملیات نظامی در هر سطح (تا -۳۰٪ سوخت!)',
+  },
+  SBIRS_SHIELD: {
+    id: 'SBIRS_SHIELD',
+    nameFa: 'منظومه هشدار سریع فروسرخ فضایی (SBIRS / سپر مداری)',
+    icon: '🛡️',
+    baseCostB: 42,
+    maxLevel: 3,
+    minSpaceDoctrineByLevel: [0, 0, 3, 6],
+    roleTagFa: 'ضدبالستیک و مصونیت رادار در هک',
+    perLevelBonusFa: '+۷٪ رهگیری ضدبالستیک و کلاهک اتمی در هر سطح + جلوگیری از کور شدن کامل رادار هنگام هک سایبری!',
+  },
+  SATCOM_EW: {
+    id: 'SATCOM_EW',
+    nameFa: 'منظومه اینترنت ماهواره‌ای امن و جنگ الکترونیک (Starshield)',
+    icon: '📡',
+    baseCostB: 34,
+    maxLevel: 3,
+    minSpaceDoctrineByLevel: [0, 0, 3, 6],
+    roleTagFa: 'درآمد ارتباطی و اخلالگر پهپاد',
+    perLevelBonusFa: '+$9B درآمد ارزی ماهانه + ۶٪ سپر سایبری و اختلال در امواج پهپادی دشمن در هر سطح',
+  },
+};
+
 export const UPGRADE_TRACKS: Record<UpgradeTrack, UpgradeTrackSpec> = {
   AEROSPACE: {
     id: 'AEROSPACE',
     nameFa: 'هوافضا، جنگنده‌های نسل ۶ و هایپرسونیک',
     icon: '🚀',
-    baseCostB: 38,
+    baseCostB: 42,
     maxLevel: 10,
     perLevelBonusFa: '+۱۱٪ قدرت ضربت هوایی و موشکی + عبور رادارگریز از پدافند دشمن',
-    milestonesFa: 'سطح ۳: مجوز تولید جنگنده‌های رادارگریز و هایپرسونیک | سطح ۷: +۱ ظرفیت عملیات نظامی ماهانه',
+    milestonesFa: 'سطح ۳: مجوز تولید نسل ۵ و هایپرسونیک | سطح ۶: +۱۰٪ نفوذ پدافند | سطح ۱۰: +۱ ظرفیت عملیات نظامی ماهانه',
+    milestoneBadges: [
+      { level: 3, labelFa: 'تولید جنگنده نسل ۵ و فتاح/کینژال' },
+      { level: 6, labelFa: '+۱۰٪ شکاف پدافند دشمن' },
+      { level: 10, labelFa: '+۱ سهمیه عملیات نظامی ماهانه' },
+    ],
   },
   AIR_DEFENSE: {
     id: 'AIR_DEFENSE',
     nameFa: 'سپر پدافند چندلایه، لیزری و ضدبالستیک',
     icon: '🛡️',
-    baseCostB: 34,
+    baseCostB: 36,
     maxLevel: 10,
     perLevelBonusFa: '+۶٪ نرخ رهگیری خودکار موشک‌ها، پهپادها و جنگنده‌های مهاجم',
-    milestonesFa: 'سطح ۳: پدافند ضدبالستیک ارتفاع بالا | سطح ۸: سپر لیزری ضدپهپاد و ضدکروز',
+    milestonesFa: 'سطح ۳: مجوز THAAD و پدافند ارتفاع بالا | سطح ۶: کاهش تلفات زیرساختی | سطح ۱۰: سپر لیزری (+۱۲٪ رهگیری)',
+    milestoneBadges: [
+      { level: 3, labelFa: 'مجوز سپر ضدبالستیک THAAD' },
+      { level: 6, labelFa: '-۲۵٪ خسارت بمباران دشمن' },
+      { level: 10, labelFa: 'گنبد لیزری فوق‌پیشرفته' },
+    ],
   },
   NAVAL_POWER: {
     id: 'NAVAL_POWER',
     nameFa: 'ناوگان اقیانوسی، زیردریایی اتمی و ضدناو',
     icon: '⚓',
-    baseCostB: 32,
+    baseCostB: 35,
     maxLevel: 10,
     perLevelBonusFa: '+۱۳٪ قدرت عملیات دریایی، محاصره بنادر و تسلط بر تنگه‌های استراتژیک',
-    milestonesFa: 'سطح ۳: ناوهای هواپیمابر سنگین | سطح ۵: امکان تهاجم آبی-خاکی بین‌قاره‌ای!',
+    milestonesFa: 'سطح ۳: ناوهای هواپیمابر | سطح ۵: تهاجم آبی-خاکی بین‌قاره‌ای | سطح ۱۰: شکستن خودکار محاصره دریایی',
+    milestoneBadges: [
+      { level: 3, labelFa: 'ناو هواپیمابر و زیردریایی اتمی' },
+      { level: 5, labelFa: 'لشکرکشی آبی-خاکی جهانی' },
+      { level: 10, labelFa: 'تسلط مطلق اقیانوسی' },
+    ],
   },
   ARMOR_LAND: {
     id: 'ARMOR_LAND',
     nameFa: 'ارتش زرهی، مکانیزه و دکترین کشورگشایی',
     icon: '🚜',
-    baseCostB: 32,
+    baseCostB: 34,
     maxLevel: 10,
     perLevelBonusFa: '+۱۲٪ قدرت تهاجم و دفاع زمینی + استحکام مرزی در برابر اشغال',
-    milestonesFa: 'سطح ۴: لشکرهای زرهی واکنش سریع | سطح ۷: +۱ ظرفیت عملیات نظامی ماهانه',
+    milestonesFa: 'سطح ۳: لشکر زرهی واکنش سریع | سطح ۶: پیشروی سریع‌تر تصرف خاک | سطح ۱۰: +۱ ظرفیت عملیات نظامی',
+    milestoneBadges: [
+      { level: 3, labelFa: 'تانک‌های نسل ۴ واکنش سریع' },
+      { level: 6, labelFa: '+۱۲٪ سرعت پیشروی زمینی' },
+      { level: 10, labelFa: '+۱ سهمیه عملیات نظامی' },
+    ],
   },
   CYBER_AI: {
     id: 'CYBER_AI',
     nameFa: 'ارتش سایبری، جنگ الکترونیک و هوش مصنوعی',
     icon: '💻',
-    baseCostB: 30,
+    baseCostB: 34,
     maxLevel: 10,
     perLevelBonusFa: '+۹٪ موفقیت هک بانک و خاموشی برق + فایروال ردیابی حملات سایبری مخفی',
-    milestonesFa: 'سطح ۴: ردیابی منشا حملات سایبری | سطح ۸: +۱ ظرفیت عملیات سایبری/مخفی ماهانه',
+    milestonesFa: 'سطح ۳: فایروال هوشمند | سطح ۶: ردیابی دقیق هکرها | سطح ۱۰: +۱ ظرفیت عملیات سایبری/مخفی',
+    milestoneBadges: [
+      { level: 3, labelFa: 'سپر اسکادا در برابر خاموشی' },
+      { level: 6, labelFa: 'ردیابی قطعی منشا هک' },
+      { level: 10, labelFa: '+۱ سهمیه عملیات مخفی' },
+    ],
   },
   INTELLIGENCE: {
     id: 'INTELLIGENCE',
-    nameFa: 'سازمان اطلاعات، ضدجاسوسی و عملیات ویژه',
+    nameFa: 'سازمان اطلاعات، ضدجاسوسی و پرچم دروغین',
     icon: '🕵️',
-    baseCostB: 30,
+    baseCostB: 34,
     maxLevel: 10,
-    perLevelBonusFa: '+۹٪ موفقیت ترور، اختلاف‌افکنی و کودتا + دستگیری تیم‌های ترور دشمن',
-    milestonesFa: 'سطح ۴: شبکه ضدجاسوسی و کشف آمران ترور | سطح ۸: +۱ ظرفیت عملیات مخفی ماهانه',
+    perLevelBonusFa: '+۹٪ موفقیت عملیات فریب، ترور و کودتا + کشف و خنثی‌سازی جاسوسان دشمن',
+    milestonesFa: 'سطح ۲: مجوز عملیات پرچم دروغین | سطح ۶: شبکه ضدجاسوسی پیشرفته | سطح ۱۰: +۱ ظرفیت عملیات مخفی',
+    milestoneBadges: [
+      { level: 2, labelFa: 'عملیات بحران‌سازی پرچم دروغین' },
+      { level: 6, labelFa: 'ضدجاسوسی و دستگیری عوامل دشمن' },
+      { level: 10, labelFa: '+۱ سهمیه عملیات مخفی' },
+    ],
   },
   INDUSTRY: {
     id: 'INDUSTRY',
-    nameFa: 'ابرصنعت، نیمه‌هادی‌ها و اقتصاد پیشرفته',
-    icon: '📈',
+    nameFa: 'ابرصنعت، نیمه‌هادی‌ها و تولید پیشرفته',
+    icon: '🏭',
+    baseCostB: 44,
+    maxLevel: 10,
+    perLevelBonusFa: '+$11B درآمد صنعتی خالص + تخفیف ساخت زیرساخت و تسلیحات بومی',
+    milestonesFa: 'سطح ۳: +۱ ظرفیت ساخت ماهانه | سطح ۶: +۱ ارتقای دکترین ماهانه | سطح ۱۰: ۳۰٪ تخفیف نگهداری زیرساخت',
+    milestoneBadges: [
+      { level: 3, labelFa: '+۱ ظرفیت ساخت‌وساز ماهانه' },
+      { level: 6, labelFa: '+۱ ظرفیت ارتقای دکترین ماهانه' },
+      { level: 10, labelFa: '-۳۰٪ هزینه نگهداری کل زیرساخت‌ها' },
+    ],
+  },
+  ECONOMIC_SOVEREIGNTY: {
+    id: 'ECONOMIC_SOVEREIGNTY',
+    nameFa: 'اقتصاد مقاومتی، بانکداری مستقل و ضدتحریم',
+    icon: '🏦',
     baseCostB: 40,
     maxLevel: 10,
-    perLevelBonusFa: '+$18B درآمد ماهانه دائمی + تخفیف ساخت‌و‌ساز و افزایش ظرفیت عمرانی ماهانه',
-    milestonesFa: 'سطح ۳ و ۶ و ۹: افزایش سقف ساخت‌وساز در ماه | سطح ۷: مقاومت بالا در برابر تحریم',
+    perLevelBonusFa: '+$10B درآمد تجاری پایدار + کاهش ۹٪ اثر تحریم‌های بین‌المللی در هر سطح',
+    milestonesFa: 'سطح ۳: کانال مالی ضدتحریم (-۳۰٪ اثر تحریم) | سطح ۶: +۱ سهمیه فروش بازار جهانی | سطح ۱۰: مصونیت تقریبی از تحریم',
+    milestoneBadges: [
+      { level: 3, labelFa: 'تسویه ارزی مستقل ضدتحریم' },
+      { level: 6, labelFa: '+۱ سهمیه فروش آزاد منابع در ماه' },
+      { level: 10, labelFa: 'قطب مالی بین‌المللی مصون از تحریم' },
+    ],
+  },
+  SPACE_ORBITAL: {
+    id: 'SPACE_ORBITAL',
+    nameFa: 'فرماندهی فضایی، منظومه‌های مداری و جنگ ستارگان',
+    icon: '🛰️',
+    baseCostB: 42,
+    maxLevel: 10,
+    perLevelBonusFa: '+۶٪ توان جنگ مداری و ASAT + بازگشایی سطوح پیشرفته منظومه‌های فضایی',
+    milestonesFa: 'سطح ۳: ارتقای منظومه‌های ماهواره‌ای به سطح ۲ | سطح ۶: منظومه‌های سطح ۳ | سطح ۱۰: سپر رهگیری مداری (+۱۲٪)',
+    milestoneBadges: [
+      { level: 3, labelFa: 'مجوز منظومه‌های ماهواره‌ای سطح ۲' },
+      { level: 6, labelFa: 'مجوز منظومه‌های ماهواره‌ای سطح ۳' },
+      { level: 10, labelFa: 'فرماندهی مداری و رهگیر فضایی' },
+    ],
   },
   NUCLEAR: {
     id: 'NUCLEAR',
     nameFa: 'برنامه هسته‌ای، راکتور پیشرفته و بازدارندگی اتمی',
     icon: '☢️',
-    baseCostB: 52,
+    baseCostB: 56,
     maxLevel: 10,
     perLevelBonusFa: 'برق پاک هسته‌ای (کاهش مصرف گاز نیروگاه‌ها) و ساخت کلاهک‌های استراتژیک',
-    milestonesFa: 'سطح ۳: برق هسته‌ای بدون مصرف گاز | سطح ۵: ساخت کلاهک اتمی | سطح ۷ و ۹: کلاهک‌های MIRV',
+    milestonesFa: 'سطح ۳: برق هسته‌ای بدون مصرف گاز | سطح ۵: ساخت کلاهک اتمی | سطح ۹: کلاهک‌های چندگانه MIRV',
+    milestoneBadges: [
+      { level: 3, labelFa: 'نیروگاه اتمی بدون مصرف گاز' },
+      { level: 5, labelFa: 'تولید کلاهک هسته‌ای بازدارنده' },
+      { level: 9, labelFa: 'کلاهک‌های هایپرسونیک MIRV' },
+    ],
   },
 };
 
@@ -1144,7 +1258,10 @@ type CountrySeed = Omit<
   | 'maritimeBlockaded'
   | 'militaryXp'
   | 'orbitalSatellites'
+  | 'constellations'
   | 'missionBonusScore'
+  | 'completedMissionsCount'
+  | 'missionRerollsUsedThisRound'
   | 'secretMissions'
   | 'secretAllies'
   | 'upgradesUsedThisRound'
@@ -1152,6 +1269,9 @@ type CountrySeed = Omit<
   | 'militaryOrdersUsedThisRound'
   | 'covertOrdersUsedThisRound'
   | 'assassinationsUsedThisRound'
+  | 'spotSalesUsedThisRound'
+  | 'requestsSentToThisRound'
+  | 'sabotageCooldowns'
   | 'damagedInfra'
   | 'relations'
   | 'nonAggressionPacts'
@@ -1169,10 +1289,15 @@ type CountrySeed = Omit<
   | 'waterProduction'
   | 'waterConsumption'
   | 'infrastructure'
+  | 'upgrades'
 > & {
   waterReserve?: number;
   waterProduction?: number;
   waterConsumption?: number;
+  upgrades: Omit<Record<UpgradeTrack, number>, 'SPACE_ORBITAL' | 'ECONOMIC_SOVEREIGNTY'> & {
+    SPACE_ORBITAL?: number;
+    ECONOMIC_SOVEREIGNTY?: number;
+  };
   infrastructure: Omit<Record<InfrastructureType, number>, 'SCIENCE_ACADEMY'> & {
     SCIENCE_ACADEMY?: number;
   };
@@ -1181,78 +1306,150 @@ type CountrySeed = Omit<
 export function createInitialMissionsForCountry(
   id: CountryId,
   personality: AIPersonality
-): SecretMission[] {
+): DynamicMission[] {
   const energyPowers: CountryId[] = ['IR', 'SA', 'RU', 'EG', 'CA', 'AU'];
   const diplomaticPowers: CountryId[] = ['DE', 'JP', 'FR', 'GB', 'IN', 'BR', 'KR'];
 
-  const firstMission: SecretMission = energyPowers.includes(id)
+  const m1: DynamicMission = energyPowers.includes(id)
     ? {
-        id: `msn-econ-${id}`,
-        kind: 'ENERGY_WEALTH',
-        titleFa: '🛢️ دکترین ابرقدرت انرژی و ثروت ملی',
-        descFa: 'مجموع خزانه ارزی + ذخیره نفت کشور خود را به عدد ۸۵۰ برسانید.',
-        targetValue: 850,
+        id: `msn-init-1-${id}`,
+        kind: 'ENERGY_EXPORT_DRIVE',
+        categoryFa: 'اقتصاد و انرژی',
+        icon: '🛢️',
+        titleFa: 'قطب صادرات انرژی و ذخیره ارزی',
+        descFa: 'مجموع خزانه ارزی + ذخیره نفت کشور خود را به ۵۶۰ واحد برسانید.',
+        targetValue: 560,
         currentValue: 0,
-        rewardCashB: 120,
-        rewardScore: 180,
+        rewardCashB: 65,
+        rewardScore: 110,
+        rewardBuffFa: '+$65B بودجه عمرانی + ۱۱۰ امتیاز ژئوپولیتیک',
         completed: false,
         completedRound: null,
+        createdRound: 1,
       }
     : diplomaticPowers.includes(id) || personality === 'ECONOMIC_POWER'
     ? {
-        id: `msn-dip-${id}`,
-        kind: 'DIPLOMATIC_PEACE',
-        titleFa: '🕊️ معمار صلح، رفاه و ائتلاف جهانی',
-        descFa: 'به حداقل ۴ متحد رسمی (یا محرمانه) و رضایت مردم بالای ۸۲٪ دست یابید.',
+        id: `msn-init-1-${id}`,
+        categoryFa: 'دیپلماسی و رفاه',
+        icon: '🕊️',
+        kind: 'DIPLOMATIC_NETWORK',
+        titleFa: 'شبکه پیمان‌های راهبردی و مشروعیت ملی',
+        descFa: 'به حداقل ۴ متحد رسمی (یا محرمانه) و رضایت مردم بالای ۷۶٪ دست یابید.',
         targetValue: 4,
         currentValue: 0,
-        rewardCashB: 120,
-        rewardScore: 180,
+        rewardCashB: 60,
+        rewardScore: 115,
+        rewardBuffFa: '+$60B پاداش تجارت + ۱۱۵ امتیاز ژئوپولیتیک',
         completed: false,
         completedRound: null,
+        createdRound: 1,
       }
     : {
-        id: `msn-emp-${id}`,
+        id: `msn-init-1-${id}`,
         kind: 'REGIONAL_INFLUENCE',
-        titleFa: '🏴 گسترش چتر نفوذ ژئوپولیتیک',
-        descFa: 'حداقل ۳ کشور مستقل جهان را هم‌پیمان راهبردی یا ضمیمه قلمرو خود کنید.',
-        targetValue: 3,
+        categoryFa: 'نفوذ منطقه‌ای',
+        icon: '🏴',
+        titleFa: 'گسترش کمربند نفوذ ژئوپولیتیک',
+        descFa: 'حداقل ۲ کشور مستقل جهان را هم‌پیمان راهبردی یا ضمیمه قلمرو خود کنید.',
+        targetValue: 2,
         currentValue: 0,
-        rewardCashB: 120,
-        rewardScore: 180,
+        rewardCashB: 68,
+        rewardScore: 120,
+        rewardBuffFa: '+$68B غنیمت راهبردی + ۱۲۰ امتیاز ژئوپولیتیک',
         completed: false,
         completedRound: null,
+        createdRound: 1,
       };
 
-  const secondMission: SecretMission = {
-    id: `msn-space-${id}`,
-    kind: 'SPACE_TECH_MASTER',
-    titleFa: '🛰️ فرماندهی فضایی و مرجعیت علمی',
-    descFa: 'حداقل ۲ ماهواره فعال در مدار زمین داشته باشید و مجموع سطح دکترین‌های خود را به ۱۸ برسانید.',
-    targetValue: 20,
+  const m2: DynamicMission = {
+    id: `msn-init-2-${id}`,
+    kind: 'SPACE_CONSTELLATION',
+    categoryFa: 'فرماندهی فضایی',
+    icon: '🛰️',
+    titleFa: 'استقرار منظومه‌های ماهواره‌ای در مدار',
+    descFa: 'مجموع سطح ماهواره‌های فعال در ۴ منظومه مداری خود را به حداقل ۳ برسانید.',
+    targetValue: 3,
     currentValue: 0,
-    rewardCashB: 135,
-    rewardScore: 210,
+    rewardCashB: 72,
+    rewardScore: 130,
+    rewardBuffFa: '+$72B اعتبار فضایی + ۱۳۰ امتیاز علمی',
     completed: false,
     completedRound: null,
+    createdRound: 1,
   };
 
-  return [firstMission, secondMission];
+  const m3: DynamicMission = {
+    id: `msn-init-3-${id}`,
+    kind: 'WELFARE_PROSPERITY',
+    categoryFa: 'ثبات و زیرساخت',
+    icon: '🌾',
+    titleFa: 'امنیت پایدار برق، آب و رفاه ملی',
+    descFa: 'همزمان رضایت مردم را به ۷۸٪ و پایداری شبکه برق را به ۹۲٪ برسانید.',
+    targetValue: 170,
+    currentValue: 0,
+    rewardCashB: 55,
+    rewardScore: 95,
+    rewardBuffFa: '+$55B مازاد مالیاتی + ۹۵ امتیاز ثبات',
+    completed: false,
+    completedRound: null,
+    createdRound: 1,
+  };
+
+  return [m1, m2, m3];
 }
 
 function makeCountry(seed: CountrySeed): CountryState {
   const isArid = ['SA', 'EG', 'IL', 'IR', 'PK'].includes(seed.id);
   const isWaterRich = ['CA', 'RU', 'BR', 'US', 'CN'].includes(seed.id);
 
+  const initialSpaceLevel =
+    ['US', 'CN', 'RU'].includes(seed.id)
+      ? 4
+      : ['FR', 'IN', 'JP', 'IL'].includes(seed.id)
+      ? 3
+      : ['IR', 'GB', 'DE', 'KR', 'UA'].includes(seed.id)
+      ? 2
+      : 1;
+
+  const initialEconSovLevel =
+    ['CN', 'US'].includes(seed.id)
+      ? 5
+      : ['RU', 'DE', 'IR', 'JP', 'GB'].includes(seed.id)
+      ? 4
+      : ['SA', 'IN', 'FR', 'KR', 'BR', 'CA', 'AU'].includes(seed.id)
+      ? 3
+      : 2;
+
+  const constellations: Record<SpaceConstellationId, number> = {
+    RECON_OPTICAL: ['US', 'CN', 'FR', 'IL', 'JP'].includes(seed.id) ? 1 : 0,
+    GNSS_NAVI: ['US', 'CN', 'RU'].includes(seed.id) ? 1 : 0,
+    SBIRS_SHIELD: ['US', 'RU'].includes(seed.id) ? 1 : 0,
+    SATCOM_EW: ['US'].includes(seed.id) ? 1 : 0,
+  };
+  const totalSats =
+    constellations.RECON_OPTICAL +
+    constellations.GNSS_NAVI +
+    constellations.SBIRS_SHIELD +
+    constellations.SATCOM_EW;
+
   return {
     ...seed,
-    orbitalSatellites: ['US', 'CN', 'RU'].includes(seed.id) ? 1 : 0,
+    treasuryB: Math.max(68, Math.round(seed.treasuryB * 0.78)),
+    orbitalSatellites: totalSats,
+    constellations,
     missionBonusScore: 0,
+    completedMissionsCount: 0,
+    missionRerollsUsedThisRound: 0,
     secretMissions: createInitialMissionsForCountry(seed.id, seed.aiPersonality),
     secretAllies: [],
     waterReserve: seed.waterReserve ?? (isWaterRich ? 260 : isArid ? 125 : 185),
     waterProduction: seed.waterProduction ?? (isWaterRich ? 92 : isArid ? 42 : 64),
     waterConsumption: seed.waterConsumption ?? (isWaterRich ? 58 : isArid ? 44 : 52),
+    upgrades: {
+      ...seed.upgrades,
+      SPACE_ORBITAL: seed.upgrades.SPACE_ORBITAL ?? initialSpaceLevel,
+      ECONOMIC_SOVEREIGNTY: seed.upgrades.ECONOMIC_SOVEREIGNTY ?? initialEconSovLevel,
+    },
     infrastructure: {
       ...seed.infrastructure,
       SCIENCE_ACADEMY: seed.infrastructure.SCIENCE_ACADEMY ?? Math.max(2, Math.round(seed.techLevel * 0.4)),
@@ -1280,6 +1477,9 @@ function makeCountry(seed: CountrySeed): CountryState {
     militaryOrdersUsedThisRound: 0,
     covertOrdersUsedThisRound: 0,
     assassinationsUsedThisRound: 0,
+    spotSalesUsedThisRound: 0,
+    requestsSentToThisRound: [],
+    sabotageCooldowns: {},
     damagedInfra: emptyDamagedInfra(),
     relations: emptyRelations(),
     nonAggressionPacts: {},

@@ -21,10 +21,13 @@ import {
   RotateCcw,
   WifiOff,
   X,
+  Settings,
+  Film,
 } from 'lucide-react';
 import { computeEconomyProjection } from '../shared/advisor';
 import {
   AlertPosture,
+  ChokepointId,
   ChokepointStatus,
   CountryId,
   CovertOpType,
@@ -39,7 +42,10 @@ import {
   InfrastructureType,
   MilitaryOpType,
   MinorNationOpType,
+  RequestLeverageMode,
   ResolutionKind,
+  SpaceConstellationId,
+  StrategicRequestKind,
   StrikeTargetSector,
   TradeResourceKind,
   UltimatumDemand,
@@ -74,11 +80,6 @@ function getOrCreatePlayerId(): string {
   }
 }
 
-/**
- * Isolated Countdown Badge (Item #2!):
- * Keeps the 500ms timer tick strictly inside this tiny badge so <App>, <WorldMap>,
- * and all buttons NEVER re-render in the background!
- */
 const PhaseCountdownBadge: React.FC<{
   phaseEndsAt: number | null;
   isPaused: boolean;
@@ -108,10 +109,6 @@ const PhaseCountdownBadge: React.FC<{
   );
 };
 
-/**
- * Isolated Total Match Elapsed Timer for All Players (HH:MM:SS):
- * Accurately tracks total elapsed game duration across pauses and save/loads without re-rendering <App>!
- */
 const MatchElapsedTimer: React.FC<{
   matchStartedAt: number | null;
   pausedAt: number | null;
@@ -149,7 +146,6 @@ const MatchElapsedTimer: React.FC<{
       className="px-2.5 py-0.5 rounded-lg bg-slate-800/90 border border-slate-700 text-cyan-200 font-mono text-xs flex items-center gap-1.5"
     >
       <Clock className="w-3.5 h-3.5 text-cyan-400" />
-      <span className="hidden sm:inline text-slate-400 font-sans text-[11px]">زمان کل:</span>
       <span className="font-bold">{formatted}</span>
     </span>
   );
@@ -180,9 +176,9 @@ export const App: React.FC = () => {
   const [toast, setToast] = useState<{ text: string; tone: 'ok' | 'warn' } | null>(null);
   const [muted, setMuted] = useState(() => sound.isMuted());
 
-  // Cleanly separated Desktop/Panel tab vs Mobile Map/Panel toggle (100% Fixes Item #4!)
   const [sideTab, setSideTab] = useState<SidePanelTab>('COUNTRY');
   const [mobileShowMap, setMobileShowMap] = useState<boolean>(true);
+  const [showRoomMenu, setShowRoomMenu] = useState<boolean>(false);
 
   const [drawerTarget, setDrawerTarget] = useState<{ countryId: CountryId; tab: DrawerTab } | null>(null);
   const [minorDrawerId, setMinorDrawerId] = useState<string | null>(null);
@@ -192,7 +188,7 @@ export const App: React.FC = () => {
   const [showBattleReplay, setShowBattleReplay] = useState(false);
   const lastAutoReplayedRoundRef = useRef<number>(0);
 
-  // Secret Creator Console State (Item #21 — Zero visible UI button!)
+  // Secret Creator Console State (Ctrl+Shift+X or 5 taps on DEFCON)
   const [showSecretCheat, setShowSecretCheat] = useState(false);
   const secretTapRef = useRef<{ count: number; lastTap: number }>({ count: 0, lastTap: 0 });
 
@@ -204,7 +200,6 @@ export const App: React.FC = () => {
     }, 4000);
   };
 
-  // Secret Keyboard Shortcut: Ctrl + Shift + X
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.shiftKey && (e.key === 'X' || e.key === 'x')) {
@@ -305,7 +300,6 @@ export const App: React.FC = () => {
   const isHost = Boolean(mePlayer?.isHost);
   const isGM = Boolean(mePlayer?.isGM);
 
-  // Auto-launch Cinematic Battle Replay before RoundSummaryModal whenever a clash-filled month resolves! (Idea #6!)
   useEffect(() => {
     const resolvedRound = myCountry?.lastRoundSummary?.roundResolved;
     if (
@@ -418,7 +412,6 @@ export const App: React.FC = () => {
     );
   };
 
-  // Properly unsubscribes socket on server so old room broadcasts NEVER pull player back! (Item #1!)
   const handleLeaveRoom = () => {
     try {
       localStorage.removeItem('ww3_saved_room');
@@ -429,11 +422,13 @@ export const App: React.FC = () => {
     socketRef.current?.emit('lobby:leave');
     setDrawerTarget(null);
     setMinorDrawerId(null);
+    setShowRoomMenu(false);
     setRoom(null);
   };
 
   const handleSaveSnapshot = () => {
     sound.playOrderConfirm();
+    setShowRoomMenu(false);
     socketRef.current?.emit(
       'game:save_snapshot',
       (res: {
@@ -459,7 +454,7 @@ export const App: React.FC = () => {
           URL.revokeObjectURL(url);
         }
         showToast(
-          `💾 بازی با موفقیت ذخیره و فایل دانلود شد! (کد سرور: ${res.saveCode})`,
+          `💾 بازی ذخیره و فایل دانلود شد! (کد سرور: ${res.saveCode})`,
           'ok'
         );
       }
@@ -468,6 +463,7 @@ export const App: React.FC = () => {
 
   const handleTogglePause = () => {
     sound.playClick();
+    setShowRoomMenu(false);
     socketRef.current?.emit(
       'game:toggle_pause',
       (res: { ok: boolean; isPaused?: boolean; errorFa?: string }) => {
@@ -533,7 +529,9 @@ export const App: React.FC = () => {
     (c) => c.playerId !== null && c.isOnline && !c.isEliminated
   );
   const readyHumansCount = activeHumanCountries.filter((c) => c.isReady).length;
-  const pendingTradesForMe = room.trades.filter((t) => t.status === 'PENDING' && t.to === myCountryId).length;
+  const pendingTradesForMe =
+    room.trades.filter((t) => t.status === 'PENDING' && t.to === myCountryId).length +
+    (room.strategicRequests || []).filter((r) => r.status === 'PENDING' && r.to === myCountryId).length;
   const econ = myCountry
     ? computeEconomyProjection(myCountry, room.market, room.chokepoints, room.minorNations)
     : null;
@@ -551,7 +549,7 @@ export const App: React.FC = () => {
       setSideTab('COUNTRY');
       setMobileShowMap(false);
     } else {
-      setDrawerTarget({ countryId: cid, tab: 'WAR' });
+      setDrawerTarget({ countryId: cid, tab: 'DIPLOMACY' });
     }
   };
 
@@ -605,6 +603,34 @@ export const App: React.FC = () => {
     );
   };
 
+  const handleProposeRequest = (payload: {
+    targetCountry: CountryId;
+    kind: StrategicRequestKind;
+    leverage: RequestLeverageMode;
+    offeredCashB?: number;
+    thirdCountry?: CountryId;
+    chokepointId?: ChokepointId;
+  }) => {
+    socketRef.current?.emit(
+      'game:propose_request',
+      payload,
+      (res: { ok: boolean; status?: string; messageFa?: string; errorFa?: string }) => {
+        showToast(res.messageFa || res.errorFa || '', res.ok ? 'ok' : 'warn');
+        if (res.ok) setDrawerTarget(null);
+      }
+    );
+  };
+
+  const handleFalseFlagSabotage = (targetCountry: CountryId, thirdCountry: CountryId) => {
+    socketRef.current?.emit(
+      'game:false_flag_sabotage',
+      { targetCountry, thirdCountry },
+      (res: { ok: boolean; messageFa?: string; errorFa?: string }) => {
+        showToast(res.messageFa || res.errorFa || '', res.ok ? 'ok' : 'warn');
+      }
+    );
+  };
+
   const handleDiplomaticAction = (
     targetCountry: CountryId,
     kind: DiplomaticActionKind,
@@ -625,7 +651,7 @@ export const App: React.FC = () => {
       { target, kind },
       (res?: { ok: boolean; errorFa?: string }) => {
         if (res && !res.ok) showToast(res.errorFa || 'خطا در ثبت جلسه', 'warn');
-        else showToast('⚖️ پرونده رسمی و رای‌گیری در سازمان ملل ثبت شد!', 'ok');
+        else showToast('⚖️ پیش‌نویس قطعنامه در شورای امنیت سازمان ملل ثبت شد!', 'ok');
       }
     );
   };
@@ -641,15 +667,13 @@ export const App: React.FC = () => {
 
   return (
     <div className="min-h-screen tactical-grid-bg text-slate-100 flex flex-col pb-16 lg:pb-0">
-      {/* Smooth Reconnect Indicator (Item #6) */}
       {!socketConnected && (
         <div className="bg-amber-500 text-slate-950 text-xs font-black py-1.5 px-4 text-center flex items-center justify-center gap-2 z-50">
           <WifiOff className="w-4 h-4 animate-bounce" />
-          در حال اتصال مجدد خودکار به سرور اتاق جنگ (بدون از دست رفتن اطلاعات)...
+          در حال اتصال مجدد خودکار به سرور اتاق جنگ...
         </div>
       )}
 
-      {/* Toast Feedback */}
       {toast && (
         <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-2xl shadow-2xl border text-xs sm:text-sm font-bold glass-panel border-slate-600 animate-panel-in">
           <span className={toast.tone === 'ok' ? 'text-emerald-300' : 'text-rose-300'}>
@@ -658,7 +682,6 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* Secret Creator Cheat Console (Hidden Trigger Only — Item #21!) */}
       {showSecretCheat && (
         <SecretCheatModal
           myCountryId={myCountryId}
@@ -670,13 +693,13 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* Quick 30-Second Visual Guide Modal (Item #14!) */}
+      {/* Updated v6.0 Quick Guide Modal */}
       {showGuideModal && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4">
           <div className="w-full max-w-xl glass-panel rounded-3xl p-5 sm:p-6 space-y-4 animate-panel-in">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h2 className="text-base sm:text-lg font-black text-emerald-300">
-                ⚡ راهنمای سریع تسلط بر فرماندهی کل (در ۳۰ ثانیه)
+                ⚡ راهنمای فرماندهی کل نسخه ۶.۰
               </h2>
               <button
                 type="button"
@@ -688,16 +711,13 @@ export const App: React.FC = () => {
             </div>
             <div className="space-y-2.5 text-xs sm:text-sm text-slate-200 leading-relaxed">
               <div className="p-3 rounded-xl bg-[#060c18] border border-slate-800">
-                <strong className="text-emerald-400">۱. مدیریت منابع حیاتی:</strong> نوار بالای صفحه موجودی <strong>خزانه، نفت (سوخت ارتش)، گاز (سوخت نیروگاه برق)، غذا و آب</strong> کشور را نشان می‌دهد. کمبود هرکدام را می‌توانید با ۱ کلیک در <strong>بورس جهانی</strong> بخرید و مازادش را بفروشید!
+                <strong className="text-emerald-400">۱. اقتصاد واقعی و لیدربورد متوازن:</strong> خرید بیش‌ازحد سلاح بدون پشتوانه صنعتی خزانه را با هزینه نگهداری خالی می‌کند! برای صدرنشینی، باید <strong>تولید ناخالص (GDP)، علم، منظومه‌های فضایی، رفاه مردم، متحدان و ماموریت‌ها</strong> را متوازن پیش ببرید.
               </div>
               <div className="p-3 rounded-xl bg-[#060c18] border border-slate-800">
-                <strong className="text-purple-300">۲. پیشرفت علمی و ارتش واقعی:</strong> در تب «ساخت و علم» با احداث <strong>قطب علم و دانشگاه ملی</strong> می‌توانید در هر ماه ۲ یا ۳ دکترین ارتقا دهید. برای حملات هوایی باید <strong>جنگنده</strong>، برای دریایی <strong>ناو/زیردریایی</strong> و برای کشورگشایی زمینی <strong>لشکر زرهی + مرز مشترک/ناو هواپیمابر</strong> داشته باشید.
+                <strong className="text-sky-300">۲. ۴ منظومه فضایی و ماموریت‌های پویا:</strong> در تب <strong>«فضا»</strong> منظومه‌های جاسوسی اپتیکال، ناوبری GPS (-۳۰٪ مصرف سوخت!)، سپر فروسرخ SBIRS و اینترنت فضایی را تا سطح ۳ ارتقا دهید و در تب <strong>«ماموریت‌ها»</strong> جوایز مستمر بگیرید.
               </div>
               <div className="p-3 rounded-xl bg-[#060c18] border border-slate-800">
-                <strong className="text-cyan-300">۳. دیپلماسی، صلح و بذر نفرت:</strong> روی هر کشوری در نقشه کلیک کنید تا <strong>پیمان صلح ۳ ماهه</strong> ببندید، <strong>اولتیماتوم نظامی</strong> بدهید، یا با عملیات <strong>کاشتن بذر نفرت</strong> رابطه آن کشور با یک قدرت سوم را خراب کنید! حتی در چت مستقیم هم ربات‌ها واقعاً مذاکره می‌کنند.
-              </div>
-              <div className="p-3 rounded-xl bg-[#060c18] border border-slate-800">
-                <strong className="text-amber-300">۴. پایان ماه، توقف و ذخیره:</strong> پس از ثبت حداکثر سهمیه عملیات ماه، دکمه سبز <strong>«پایان ماه و اجرا»</strong> را بزنید. میزبان هر لحظه می‌تواند بازی را <strong>Pause</strong> یا <strong>ذخیره (Save)</strong> کند.
+                <strong className="text-amber-300">۳. درخواست‌های راهبردی و پرچم دروغین:</strong> روی هر کشوری در نقشه کلیک کنید تا از آن بخواهید <strong>تنگه‌ای را ببندد/باز کند، به کشور سوم حمله نظامی یا سایبری بزند، یا تحریم وضع کند</strong>؛ یا با <strong>عملیات پرچم دروغین</strong> دو متحد را به جان هم بیندازید!
               </div>
             </div>
             <button
@@ -705,13 +725,13 @@ export const App: React.FC = () => {
               onClick={() => setShowGuideModal(false)}
               className="w-full py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-sm"
             >
-              متوجه شدم، بازگشت به اتاق جنگ!
+              ورود به اتاق فرماندهی!
             </button>
           </div>
         </div>
       )}
 
-      {/* Full Endgame Victory Podium Modal (Item #1 — Properly closes campaign & offers clean Rematch / Exit!) */}
+      {/* Endgame Victory Podium */}
       {room.phase === 'FINISHED' && !endgameDismissed && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
           <div className="w-full max-w-2xl glass-panel border-amber-400/50 rounded-3xl p-5 sm:p-6 space-y-5 animate-panel-in">
@@ -785,7 +805,7 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* Cinematic Widescreen Live Battle Replay Theater (Idea #6!) */}
+      {/* Pre-Month Global World-News Cinema */}
       {showBattleReplay && room.lastRoundReplay && room.lastRoundReplay.length > 0 && (
         <BattleReplayOverlay
           roundNumber={myCountry?.lastRoundSummary?.roundResolved || Math.max(1, room.round - 1)}
@@ -795,7 +815,6 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* End-of-Month Summary Modal (Opens right after Cinematic Replay finishes!) */}
       {room.phase === 'PLANNING' && !showBattleReplay && myCountry?.lastRoundSummary && (
         <RoundSummaryModal
           room={room}
@@ -806,7 +825,6 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* Targeted 18s Radar Intercept Modal */}
       {room.phase === 'RADAR_ALERT' &&
         !room.isPaused &&
         myCountry &&
@@ -831,11 +849,10 @@ export const App: React.FC = () => {
           />
         )}
 
-      {/* Paused Banner (Item #5) */}
       {room.isPaused && (
         <div className="bg-amber-500/20 border-b border-amber-400/50 px-4 py-2 text-center text-xs sm:text-sm font-black text-amber-200 flex items-center justify-center gap-3">
           <Pause className="w-4 h-4 text-amber-400" />
-          <span>⏸️ بازی توسط میزبان به صورت موقت متوقف (Pause) شده است.</span>
+          <span>⏸️ بازی توسط میزبان متوقف (Pause) شده است.</span>
           {isHost && (
             <button
               type="button"
@@ -848,7 +865,6 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* Clear Banner for Non-Targeted Players During Radar Alert */}
       {room.phase === 'RADAR_ALERT' &&
         (!myCountry || !myCountry.incomingAlertActive || myCountry.alertPostureConfirmed) && (
           <div className="bg-rose-950/70 border-b border-rose-500/50 px-4 py-2 text-center text-xs sm:text-sm font-bold text-rose-200 flex items-center justify-center gap-2">
@@ -857,7 +873,6 @@ export const App: React.FC = () => {
           </div>
         )}
 
-      {/* Persistent Finished Strip (when modal dismissed) */}
       {room.phase === 'FINISHED' && room.winnerSummaryFa && (
         <div className="bg-gradient-to-l from-amber-500/25 via-emerald-500/20 to-cyan-500/25 border-b border-amber-400/50 px-4 py-2.5 text-center text-xs sm:text-sm font-black text-amber-200 flex flex-wrap items-center justify-center gap-2.5">
           <span>🏆 {room.winnerSummaryFa}</span>
@@ -880,19 +895,19 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* Top Glassmorphic Command HUD */}
-      <header className="bg-[#060d1b]/95 backdrop-blur-xl border-b border-slate-800/90 px-3 sm:px-5 py-2.5 space-y-2 sticky top-0 z-30">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+      {/* Streamlined, Ultra-Clean Top HUD (v6.0 Item #7!) */}
+      <header className="bg-[#060d1b]/95 backdrop-blur-xl border-b border-slate-800/90 px-3 sm:px-5 py-2 space-y-2 sticky top-0 z-30">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 sm:gap-2.5 flex-wrap">
             <span
               onClick={handleDefconSecretTap}
-              className={`px-2.5 py-1 rounded-lg font-mono font-black text-xs select-none ${defconBadgeColor}`}
+              className={`px-2.5 py-1 rounded-lg font-mono font-black text-xs select-none cursor-pointer ${defconBadgeColor}`}
             >
               DEFCON {room.defcon}
             </span>
             <span className="text-xs sm:text-sm font-bold text-white">
-              ماه {room.round}/{room.settings.maxRounds} •{' '}
-              <span className="text-cyan-300">{room.calendarLabelFa}</span>
+              ماه {room.round}/{room.settings.maxRounds}{' '}
+              <span className="hidden sm:inline text-cyan-300">• {room.calendarLabelFa}</span>
             </span>
             <MatchElapsedTimer
               matchStartedAt={room.matchStartedAt}
@@ -902,8 +917,8 @@ export const App: React.FC = () => {
               isPaused={room.isPaused}
               isFinished={room.phase === 'FINISHED'}
             />
-            <span className="hidden md:inline-block text-xs text-amber-300 font-mono bg-amber-500/10 border border-amber-500/25 px-2.5 py-0.5 rounded-lg">
-              🛢️ نفت جهانی: ${room.market.oilPriceUsd}
+            <span className="hidden md:inline-block text-xs text-amber-300 font-mono bg-amber-500/10 border border-amber-500/25 px-2 py-0.5 rounded-lg">
+              🛢️ نفت: ${room.market.oilPriceUsd}
             </span>
             {room.phase === 'PLANNING' && (
               <PhaseCountdownBadge
@@ -914,7 +929,8 @@ export const App: React.FC = () => {
             )}
           </div>
 
-          <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+          {/* Primary Action + Consolidated Room Controls Popover */}
+          <div className="flex items-center gap-2 relative">
             {myCountry && !myCountry.isEliminated && room.phase === 'PLANNING' && (
               <button
                 type="button"
@@ -923,7 +939,7 @@ export const App: React.FC = () => {
                   sound.playOrderConfirm();
                   socketRef.current?.emit('game:toggle_ready', !myCountry.isReady);
                 }}
-                className={`px-3.5 py-1.5 rounded-xl font-black text-xs sm:text-sm flex items-center gap-1.5 transition shadow disabled:opacity-40 ${
+                className={`px-4 py-1.5 rounded-xl font-black text-xs sm:text-sm flex items-center gap-1.5 transition shadow-lg disabled:opacity-40 ${
                   myCountry.isReady
                     ? 'bg-emerald-500/25 border border-emerald-400 text-emerald-200'
                     : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
@@ -938,81 +954,107 @@ export const App: React.FC = () => {
               </button>
             )}
 
-            {/* Host Pause/Resume Button (Item #5) */}
-            {(isHost || isGM) && room.phase !== 'FINISHED' && (
-              <button
-                type="button"
-                title={room.isPaused ? 'ادامه بازی' : 'توقف موقت بازی (Pause)'}
-                onClick={handleTogglePause}
-                className={`p-2 rounded-xl border text-xs font-bold flex items-center gap-1 ${
-                  room.isPaused
-                    ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
-                    : 'bg-slate-800/90 hover:bg-slate-700 border-slate-700 text-amber-300'
-                }`}
-              >
-                {room.isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
-                <span className="hidden xl:inline">{room.isPaused ? 'ادامه' : 'توقف'}</span>
-              </button>
-            )}
-
-            {/* Save Game Snapshot Button (Item #5) */}
             <button
               type="button"
-              title="ذخیره کامل بازی برای ادامه در زمان دیگر"
-              onClick={handleSaveSnapshot}
-              className="p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-cyan-300 text-xs font-bold flex items-center gap-1"
-            >
-              <Save className="w-4 h-4" />
-              <span className="hidden xl:inline">ذخیره</span>
-            </button>
-
-            {/* 30s Quick Guide Button (Item #14) */}
-            <button
-              type="button"
-              title="راهنمای سریع بازی"
               onClick={() => {
                 sound.playClick();
-                setShowGuideModal(true);
+                setShowRoomMenu((v) => !v);
               }}
-              className="p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-emerald-300"
+              className="px-2.5 py-1.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-bold flex items-center gap-1.5"
             >
-              <HelpCircle className="w-4 h-4" />
+              <Settings className="w-4 h-4 text-cyan-300" />
+              <span className="hidden sm:inline">منوی اتاق</span>
             </button>
 
-            {room.settings.gameMode === 'MULTI' && (
-              <button
-                type="button"
-                title="کپی لینک دعوت لابی"
-                onClick={() => {
-                  sound.playClick();
-                  const link = `${window.location.origin}${window.location.pathname}?room=${room.roomCode}`;
-                  navigator.clipboard.writeText(link);
-                  showToast(`لینک دعوت لابی (${room.roomCode}) کپی شد!`, 'ok');
-                }}
-                className="p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs flex items-center gap-1"
-              >
-                <Share2 className="w-4 h-4" />
-                <span className="hidden sm:inline font-mono">{room.roomCode}</span>
-              </button>
+            {showRoomMenu && (
+              <div className="absolute left-0 top-11 w-56 glass-panel rounded-2xl p-2 space-y-1 z-50 shadow-2xl animate-panel-in text-xs">
+                {(isHost || isGM) && room.phase !== 'FINISHED' && (
+                  <button
+                    type="button"
+                    onClick={handleTogglePause}
+                    className="w-full px-3 py-2 rounded-xl hover:bg-slate-800/80 text-amber-200 font-bold flex items-center gap-2 text-right"
+                  >
+                    {room.isPaused ? <Play className="w-4 h-4 text-emerald-400" /> : <Pause className="w-4 h-4" />}
+                    <span>{room.isPaused ? 'ادامه جریان بازی' : 'توقف موقت بازی (Pause)'}</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleSaveSnapshot}
+                  className="w-full px-3 py-2 rounded-xl hover:bg-slate-800/80 text-cyan-200 font-bold flex items-center gap-2 text-right"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>ذخیره بازی (Save فایل)</span>
+                </button>
+
+                {(room.lastRoundReplay?.length || 0) > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowRoomMenu(false);
+                      setShowBattleReplay(true);
+                    }}
+                    className="w-full px-3 py-2 rounded-xl hover:bg-slate-800/80 text-purple-200 font-bold flex items-center gap-2 text-right"
+                  >
+                    <Film className="w-4 h-4" />
+                    <span>بازپخش سینمایی ماه قبل</span>
+                  </button>
+                )}
+
+                {room.settings.gameMode === 'MULTI' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      sound.playClick();
+                      setShowRoomMenu(false);
+                      const link = `${window.location.origin}${window.location.pathname}?room=${room.roomCode}`;
+                      navigator.clipboard.writeText(link);
+                      showToast(`لینک دعوت لابی (${room.roomCode}) کپی شد!`, 'ok');
+                    }}
+                    className="w-full px-3 py-2 rounded-xl hover:bg-slate-800/80 text-slate-200 font-bold flex items-center justify-between"
+                  >
+                    <span className="flex items-center gap-2">
+                      <Share2 className="w-4 h-4" /> کپی لینک دعوت
+                    </span>
+                    <span className="font-mono text-emerald-300">{room.roomCode}</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setMuted(sound.toggleMute())}
+                  className="w-full px-3 py-2 rounded-xl hover:bg-slate-800/80 text-slate-200 font-bold flex items-center gap-2 text-right"
+                >
+                  {muted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4 text-emerald-400" />}
+                  <span>{muted ? 'وصل کردن افکت‌های صوتی' : 'بی‌صدا کردن بازی'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    sound.playClick();
+                    setShowRoomMenu(false);
+                    setShowGuideModal(true);
+                  }}
+                  className="w-full px-3 py-2 rounded-xl hover:bg-slate-800/80 text-emerald-300 font-bold flex items-center gap-2 text-right"
+                >
+                  <HelpCircle className="w-4 h-4" />
+                  <span>راهنمای سریع نسخه ۶.۰</span>
+                </button>
+
+                <div className="border-t border-slate-800 my-1" />
+
+                <button
+                  type="button"
+                  onClick={handleLeaveRoom}
+                  className="w-full px-3 py-2 rounded-xl hover:bg-rose-500/20 text-rose-300 font-bold flex items-center gap-2 text-right"
+                >
+                  <LogOut className="w-4 h-4" />
+                  <span>خروج به منوی اصلی</span>
+                </button>
+              </div>
             )}
-
-            <button
-              type="button"
-              title="قطع/وصل صدا"
-              onClick={() => setMuted(sound.toggleMute())}
-              className="p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-300"
-            >
-              {muted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4 text-emerald-400" />}
-            </button>
-
-            <button
-              type="button"
-              title="خروج از بازی"
-              onClick={handleLeaveRoom}
-              className="p-2 rounded-xl bg-slate-800/90 hover:bg-rose-500/20 border border-slate-700 text-slate-400 hover:text-rose-300"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
           </div>
         </div>
 
@@ -1030,7 +1072,7 @@ export const App: React.FC = () => {
           </div>
         )}
 
-        {/* My Country 7 Vital Resources Strip (Includes Food & Water — Items #23 & #24!) */}
+        {/* 7 Vital Resources Ribbon */}
         {myCountry && econ && !myCountry.isEliminated && (
           <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-1.5 text-[11px]">
             <div className="px-2.5 py-1.5 rounded-xl bg-[#0a1426] border border-slate-800 flex items-center justify-between">
@@ -1039,7 +1081,7 @@ export const App: React.FC = () => {
               </span>
               <span className="font-mono font-black text-emerald-300">
                 ${myCountry.treasuryB}B{' '}
-                <span className="text-[10px] text-emerald-400/80">
+                <span className={`text-[10px] ${econ.netIncomeB >= 0 ? 'text-emerald-400/80' : 'text-rose-400'}`}>
                   ({econ.netIncomeB >= 0 ? `+${econ.netIncomeB}` : econ.netIncomeB})
                 </span>
               </span>
@@ -1111,7 +1153,7 @@ export const App: React.FC = () => {
         )}
       </header>
 
-      {/* Interactive Global Flashpoint Event Banner (Idea #4 — Non-blocking 1-click decision!) */}
+      {/* Interactive Global Flashpoint Event Banner */}
       {room.phase === 'PLANNING' &&
         room.activeFlashpoint &&
         myCountry &&
@@ -1153,14 +1195,16 @@ export const App: React.FC = () => {
         )}
 
       {/* Main Workspace */}
-      <main className="flex-1 max-w-[1640px] w-full mx-auto p-3 sm:p-4 grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* Interactive World Map */}
+      <main
+        onClick={() => showRoomMenu && setShowRoomMenu(false)}
+        className="flex-1 max-w-[1640px] w-full mx-auto p-3 sm:p-4 grid grid-cols-1 lg:grid-cols-12 gap-4"
+      >
         <div
           className={`lg:col-span-7 flex flex-col gap-3 ${
             mobileShowMap ? 'block' : 'hidden lg:flex'
           }`}
         >
-          <div className="h-[58vh] sm:h-[64vh] lg:h-[calc(100vh-205px)]">
+          <div className="h-[58vh] sm:h-[64vh] lg:h-[calc(100vh-195px)]">
             <WorldMap
               room={room}
               myCountryId={myCountryId}
@@ -1172,7 +1216,6 @@ export const App: React.FC = () => {
           </div>
         </div>
 
-        {/* Command Side Column (100% Decoupled & Bug-Free Tab Switching — Item #4!) */}
         <div
           className={`lg:col-span-5 flex flex-col gap-3 ${
             mobileShowMap ? 'hidden lg:flex' : 'flex'
@@ -1187,7 +1230,7 @@ export const App: React.FC = () => {
                   sideTab === 'COUNTRY' ? 'bg-emerald-500 text-slate-950 font-black shadow' : 'text-slate-300 hover:bg-slate-800/70'
                 }`}
               >
-                <Building2 className="w-4 h-4" /> کشور و معاملات
+                <Building2 className="w-4 h-4" /> فرماندهی کشور
               </button>
             ) : (
               <button
@@ -1207,7 +1250,7 @@ export const App: React.FC = () => {
                 sideTab === 'DIPLOMACY' ? 'bg-cyan-400 text-slate-950 font-black shadow' : 'text-slate-300 hover:bg-slate-800/70'
               }`}
             >
-              <MessageSquare className="w-4 h-4" /> ائتلاف و چت
+              <MessageSquare className="w-4 h-4" /> سازمان ملل و چت
               {pendingTradesForMe > 0 && (
                 <span className="px-1.5 py-0.2 rounded-full bg-rose-600 text-white text-[10px]">
                   {pendingTradesForMe}
@@ -1221,11 +1264,11 @@ export const App: React.FC = () => {
                 sideTab === 'NEWS' ? 'bg-rose-500 text-white font-black shadow' : 'text-slate-300 hover:bg-slate-800/70'
               }`}
             >
-              <Tv className="w-4 h-4" /> اخبار، نبردها و لیدربرد
+              <Tv className="w-4 h-4" /> اخبار جهان و لیدربورد
             </button>
           </div>
 
-          <div className="lg:h-[calc(100vh-268px)] lg:overflow-y-auto pr-0.5">
+          <div className="lg:h-[calc(100vh-258px)] lg:overflow-y-auto pr-0.5">
             {sideTab === 'COUNTRY' && myCountryId && (
               <MyCountryPanel
                 room={room}
@@ -1257,9 +1300,19 @@ export const App: React.FC = () => {
                     }
                   )
                 }
-                onLaunchSatellite={() =>
+                onUpgradeConstellation={(cid: SpaceConstellationId) =>
                   socketRef.current?.emit(
-                    'game:launch_satellite',
+                    'game:upgrade_constellation',
+                    cid,
+                    (res: { ok: boolean; messageFa?: string; errorFa?: string }) => {
+                      showToast(res.messageFa || res.errorFa || '', res.ok ? 'ok' : 'warn');
+                    }
+                  )
+                }
+                onRerollMission={(missionId: string) =>
+                  socketRef.current?.emit(
+                    'game:reroll_mission',
+                    missionId,
                     (res: { ok: boolean; messageFa?: string; errorFa?: string }) => {
                       showToast(res.messageFa || res.errorFa || '', res.ok ? 'ok' : 'warn');
                     }
@@ -1338,6 +1391,15 @@ export const App: React.FC = () => {
                     }
                   )
                 }
+                onRespondRequest={(requestId, accept) =>
+                  socketRef.current?.emit(
+                    'game:respond_request',
+                    { requestId, accept },
+                    (res: { ok: boolean; messageFa?: string; errorFa?: string }) => {
+                      showToast(res.messageFa || res.errorFa || '', res.ok ? 'ok' : 'warn');
+                    }
+                  )
+                }
                 onVoteResolution={(resolutionId, vote) =>
                   socketRef.current?.emit('game:vote_un_resolution', { resolutionId, vote })
                 }
@@ -1378,7 +1440,6 @@ export const App: React.FC = () => {
         </div>
       </main>
 
-      {/* Major Power Tactical Drawer */}
       {drawerTarget && (
         <TargetCountryDrawer
           room={room}
@@ -1388,6 +1449,8 @@ export const App: React.FC = () => {
           onClose={() => setDrawerTarget(null)}
           onQueueOrder={handleQueueOrder}
           onProposeTrade={handleProposeTrade}
+          onProposeRequest={handleProposeRequest}
+          onFalseFlagSabotage={handleFalseFlagSabotage}
           onDiplomaticAction={handleDiplomaticAction}
           onToggleSanction={(tid) => socketRef.current?.emit('game:toggle_sanction', tid)}
           onProposeResolution={handleProposeResolution}
@@ -1399,7 +1462,6 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* World Minor Nation Conquest / Coup / Base Drawer */}
       {minorDrawerId && (
         <MinorNationDrawer
           room={room}
@@ -1451,7 +1513,7 @@ export const App: React.FC = () => {
             }`}
           >
             <Building2 className="w-5 h-5" />
-            <span>کشور و بورس</span>
+            <span>فرماندهی کشور</span>
           </button>
         ) : (
           <button
@@ -1474,7 +1536,7 @@ export const App: React.FC = () => {
           }`}
         >
           <MessageSquare className="w-5 h-5" />
-          <span>ائتلاف و چت</span>
+          <span>سازمان ملل</span>
           {pendingTradesForMe > 0 && (
             <span className="absolute top-1 left-6 w-4 h-4 rounded-full bg-rose-600 text-white text-[10px] flex items-center justify-center">
               {pendingTradesForMe}

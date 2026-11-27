@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Send, Globe, Lock, Check, X, Scale, Shield, Plus, LogOut } from 'lucide-react';
+import { Send, Globe, Lock, Check, X, Scale, Shield, Plus, LogOut, FileText } from 'lucide-react';
 import { WEAPONS_CATALOG } from '../../shared/realWorldData';
 import { CountryId, GameRoomState, ResolutionKind } from '../../shared/types';
 import { sound } from '../utils/sound';
@@ -19,6 +19,7 @@ interface DiplomacyChatPanelProps {
     toCountry?: CountryId
   ) => void;
   onRespondTrade: (offerId: string, accept: boolean) => void;
+  onRespondRequest: (requestId: string, accept: boolean) => void;
   onVoteResolution: (resolutionId: string, vote: 'YES' | 'NO' | 'VETO') => void;
   onProposeResolution: (target: CountryId, kind: ResolutionKind) => void;
   onCreateCoalition: (nameFa: string) => void;
@@ -28,9 +29,9 @@ interface DiplomacyChatPanelProps {
 
 const QUICK_CABLES = [
   '🤝 سلام؛ پیشنهاد صلح، دوستی و بهبود روابط دوجانبه داریم.',
-  '⚠️ اولتیماتوم رسمی: فوراً تحرکات و تحریم‌ها علیه ما را متوقف کنید!',
-  '🛢️ آماده قرارداد تجارت نفت، غذا و تسلیحات با شرایط عالی هستیم.',
-  '🛡️ اعضای ائتلاف! برای رای‌گیری شورای امنیت و دفاع مشترک هماهنگ شوید.',
+  '⚠️ هشدار راهبردی: فوراً تحرکات و تحریم‌ها علیه ما را متوقف کنید!',
+  '🛢️ آماده قرارداد دوجانبه نفت، غذا و تسلیحات هستیم.',
+  '🛡️ اعضای ائتلاف! برای رای‌گیری شورای امنیت هماهنگ شوید.',
 ];
 
 export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
@@ -41,6 +42,7 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
   onChangeChatTarget,
   onSendChat,
   onRespondTrade,
+  onRespondRequest,
   onVoteResolution,
   onProposeResolution,
   onCreateCoalition,
@@ -66,10 +68,13 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
       )
     : [];
 
+  const incomingRequests = (room.strategicRequests || []).filter(
+    (r) => r.status === 'PENDING' && r.to === myCountryId
+  );
   const incomingTrades = room.trades.filter(
     (t) => t.status === 'PENDING' && t.to === myCountryId
   );
-  const recentTrades = room.trades.slice(0, 5);
+  const recentTrades = room.trades.slice(0, 4);
   const activeResolutions = room.resolutions.filter((r) => r.status === 'ACTIVE');
 
   const filteredMessages = room.messages.filter((m) => {
@@ -134,13 +139,75 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
         </div>
       ))}
 
+      {/* Incoming Smart Strategic Requests from Players */}
+      {incomingRequests.length > 0 && (
+        <div className="bg-amber-950/35 border border-amber-400/45 rounded-2xl p-3.5 space-y-2">
+          <h3 className="text-xs sm:text-sm font-black text-amber-300 flex items-center gap-1.5">
+            <FileText className="w-4 h-4" />
+            درخواست‌های راهبردی روی میز فرماندهی شما ({incomingRequests.length})
+          </h3>
+          {incomingRequests.map((req) => {
+            const sender = room.countries[req.from];
+            return (
+              <div
+                key={req.id}
+                className="p-3 rounded-xl bg-[#07101e] border border-slate-700 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs"
+              >
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <CountryFlag countryId={sender.id} size="sm" />
+                    <span className="font-black text-white">از سوی {sender.nameFa}:</span>
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        req.leverage === 'COERCIVE_PRESSURE'
+                          ? 'bg-rose-500/20 text-rose-300'
+                          : 'bg-emerald-500/20 text-emerald-300'
+                      }`}
+                    >
+                      {req.leverage === 'COERCIVE_PRESSURE'
+                        ? '⚠️ همراه با فشار نظامی'
+                        : req.offeredCashB > 0
+                        ? `🤝 مشوق مالی: +$${req.offeredCashB}B`
+                        : '🤝 پیشنهاد دیپلماتیک'}
+                    </span>
+                  </div>
+                  <div className="text-slate-200 font-bold mt-1">{req.summaryFa}</div>
+                </div>
+                <div className="flex gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      sound.playDiplomacy();
+                      onRespondRequest(req.id, true);
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black flex items-center gap-1"
+                  >
+                    <Check className="w-3.5 h-3.5" /> موافقت و اجرا
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      sound.playClick();
+                      onRespondRequest(req.id, false);
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 font-bold flex items-center gap-1"
+                  >
+                    <X className="w-3.5 h-3.5" /> رد درخواست
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {/* Coalitions & Special OPEC/UN Summits Bar */}
       {me && !me.isEliminated && (
         <div className="glass-card rounded-2xl p-3.5 space-y-3">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <div className="text-xs font-black text-cyan-300 flex items-center gap-1.5">
               <Shield className="w-4 h-4" />
-              {myCoalition ? `ائتلاف فعلی شما: «${myCoalition.nameFa}»` : 'شما هنوز عضو ائتلاف چندجانبه نیستید'}
+              {myCoalition ? `ائتلاف شما: «${myCoalition.nameFa}»` : 'بدون عضویت در ائتلاف'}
             </div>
             <div className="flex items-center gap-1.5">
               {myCoalition && (
@@ -152,7 +219,7 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
                   }}
                   className="px-2.5 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-300 text-xs font-bold flex items-center gap-1"
                 >
-                  <LogOut className="w-3.5 h-3.5" /> خروج از ائتلاف
+                  <LogOut className="w-3.5 h-3.5" /> خروج
                 </button>
               )}
               <button
@@ -217,7 +284,7 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
                   maxLength={32}
                   value={newCoalitionName}
                   onChange={(e) => setNewCoalitionName(e.target.value)}
-                  placeholder="نام ائتلاف جدید (مثلاً: پیمان اوراسیا)..."
+                  placeholder="نام ائتلاف جدید..."
                   className="flex-1 px-3 py-2 rounded-xl bg-[#050a14] border border-slate-700 text-xs text-white"
                 />
                 <button
@@ -237,17 +304,23 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
               <div className="grid grid-cols-2 gap-2 text-xs pt-1">
                 <button
                   type="button"
-                  onClick={() => onProposeResolution(me.id, 'OPEC_OIL_CUT')}
+                  onClick={() => {
+                    sound.playUNGavel();
+                    onProposeResolution(me.id, 'OPEC_OIL_CUT');
+                  }}
                   className="p-2.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-amber-200 font-bold text-right"
                 >
-                  🛢️ کمیته اوپک‌پلاس: افزایش قیمت نفت (+$22)
+                  🛢️ اوپک‌پلاس: افزایش قیمت نفت (+$22)
                 </button>
                 <button
                   type="button"
-                  onClick={() => onProposeResolution(me.id, 'OPEC_OIL_BOOST')}
+                  onClick={() => {
+                    sound.playUNGavel();
+                    onProposeResolution(me.id, 'OPEC_OIL_BOOST');
+                  }}
                   className="p-2.5 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/35 text-sky-200 font-bold text-right"
                 >
-                  📉 کمیته انرژی: کاهش قیمت نفت (-$18)
+                  📉 آژانس انرژی: کاهش قیمت نفت (-$18)
                 </button>
               </div>
             </div>
@@ -259,7 +332,7 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
       {incomingTrades.length > 0 && (
         <div className="bg-emerald-950/30 border border-emerald-500/40 rounded-2xl p-3.5 space-y-2">
           <h3 className="text-xs sm:text-sm font-black text-emerald-300">
-            📨 معاهدات و قراردادهای منتظر امضای شما ({incomingTrades.length})
+            📨 قراردادها و معاهدات منتظر امضای شما ({incomingTrades.length})
           </h3>
           {incomingTrades.map((tr) => {
             const sender = room.countries[tr.from];
@@ -276,11 +349,11 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
                     {tr.offerType === 'PEACE_TREATY'
                       ? `🕊️ پیشنهاد پیمان صلح و آتش‌بس ۳ ماهه (+$${tr.priceB}B)`
                       : tr.offerType === 'SECRET_DEFENSE_PACT'
-                      ? `🕵️ پیشنهاد پیمان دفاعی محرمانه پشت‌پرده (مخفی از سایرین • +$${tr.priceB}B)`
+                      ? `🕵️ پیمان دفاعی محرمانه پشت‌پرده (+$${tr.priceB}B)`
                       : tr.offerType === 'ALLIANCE'
                       ? `🤝 پیشنهاد پیمان دفاعی مشترک (+$${tr.priceB}B)`
                       : tr.offerType === 'WEAPON'
-                      ? `${tr.direction === 'SELL' ? 'پیشنهاد فروش' : 'درخواست خرید'} ${tr.amount}× «${wName}» ($${tr.priceB}B)`
+                      ? `${tr.direction === 'SELL' ? 'فروش' : 'خرید'} ${tr.amount}× «${wName}» ($${tr.priceB}B)`
                       : `${tr.direction === 'SELL' ? 'فروش' : 'خرید'} ${tr.amount} واحد ${tr.offerType} ($${tr.priceB}B)`}
                   </span>
                 </div>
@@ -312,38 +385,58 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
         </div>
       )}
 
-      {/* Active UN & Special Committee Votes */}
+      {/* Active UN Security Council Votes (With Smart Veto Warnings!) */}
       {activeResolutions.length > 0 && (
         <div className="glass-card border-amber-500/35 rounded-2xl p-3.5 space-y-2.5">
           <h3 className="text-xs sm:text-sm font-black text-amber-300 flex items-center gap-1.5">
             <Scale className="w-4 h-4" />
-            جلسات و رای‌گیری‌های فعال بین‌المللی ({activeResolutions.length})
+            صحن علنی شورای امنیت و کمیته‌های سازمان ملل ({activeResolutions.length})
           </h3>
           {activeResolutions.map((res) => {
-            const canVeto =
-              Boolean(me?.isUNVetoMember) &&
-              (res.kind === 'GLOBAL_SANCTION' ||
-                res.kind === 'CONDEMN_AGGRESSION' ||
-                res.kind === 'IAEA_INSPECTION');
+            const vetoEligible =
+              res.kind === 'GLOBAL_SANCTION' ||
+              res.kind === 'CONDEMN_AGGRESSION' ||
+              res.kind === 'IAEA_INSPECTION';
+            const canVeto = Boolean(me?.isUNVetoMember) && vetoEligible;
+
+            // Detect if a P5 ally of target is likely to veto at round end!
+            const p5Protectors = vetoEligible
+              ? Object.values(room.countries).filter(
+                  (c) =>
+                    c.isUNVetoMember &&
+                    !c.isEliminated &&
+                    c.id !== res.proposer &&
+                    (c.id === res.target || c.allies.includes(res.target))
+                )
+              : [];
 
             return (
               <div
                 key={res.id}
                 className="p-3 rounded-xl bg-[#060c18] border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
               >
-                <div>
+                <div className="space-y-1">
                   <span className="text-[10px] font-bold text-amber-300">{res.committeeFa}</span>
                   <div className="font-bold text-white">{res.titleFa}</div>
-                  <div className="text-[11px] text-slate-400 mt-0.5">{res.effectSummaryFa}</div>
-                  <div className="text-[11px] text-cyan-300 mt-1 font-mono">
-                    موافق: {res.votesYes.length} کشور • مخالف: {res.votesNo.length} کشور
+                  <div className="text-[11px] text-slate-400">{res.effectSummaryFa}</div>
+                  <div className="text-[11px] text-cyan-300 font-mono flex flex-wrap items-center gap-2">
+                    <span>👍 موافق فعلی: {res.votesYes.length}</span>
+                    <span>• 👎 مخالف فعلی: {res.votesNo.length}</span>
+                    {p5Protectors.length > 0 && (
+                      <span className="text-rose-300 font-sans text-[10px]">
+                        ⚠️ احتمال وتو توسط: {p5Protectors.map((p) => p.nameFa).join('، ')}
+                      </span>
+                    )}
                   </div>
                 </div>
                 {me && !me.isEliminated && (
                   <div className="flex items-center gap-1.5 shrink-0">
                     <button
                       type="button"
-                      onClick={() => onVoteResolution(res.id, 'YES')}
+                      onClick={() => {
+                        sound.playClick();
+                        onVoteResolution(res.id, 'YES');
+                      }}
                       className={`px-2.5 py-1.5 rounded-lg border font-bold ${
                         res.votesYes.includes(me.id)
                           ? 'bg-emerald-500 text-slate-950 border-emerald-400'
@@ -354,7 +447,10 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
                     </button>
                     <button
                       type="button"
-                      onClick={() => onVoteResolution(res.id, 'NO')}
+                      onClick={() => {
+                        sound.playClick();
+                        onVoteResolution(res.id, 'NO');
+                      }}
                       className={`px-2.5 py-1.5 rounded-lg border font-bold ${
                         res.votesNo.includes(me.id)
                           ? 'bg-rose-500 text-white border-rose-400'
@@ -366,7 +462,10 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
                     {canVeto && (
                       <button
                         type="button"
-                        onClick={() => onVoteResolution(res.id, 'VETO')}
+                        onClick={() => {
+                          sound.playUNGavel();
+                          onVoteResolution(res.id, 'VETO');
+                        }}
                         className="px-2.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-black"
                       >
                         🛑 وتو
@@ -380,10 +479,9 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
         </div>
       )}
 
-      {/* Diplomatic Messenger (With Real AI Relation Negotiation!) */}
-      <div className="glass-panel rounded-2xl overflow-hidden grid grid-cols-1 md:grid-cols-3 min-h-[390px]">
-        {/* Channel Selector */}
-        <div className="border-b md:border-b-0 md:border-l border-slate-800 p-2.5 space-y-1.5 max-h-[165px] md:max-h-[430px] overflow-y-auto bg-[#060c18]">
+      {/* Diplomatic Messenger */}
+      <div className="glass-panel rounded-2xl overflow-hidden grid grid-cols-1 md:grid-cols-3 min-h-[380px]">
+        <div className="border-b md:border-b-0 md:border-l border-slate-800 p-2.5 space-y-1.5 max-h-[160px] md:max-h-[420px] overflow-y-auto bg-[#060c18]">
           <button
             type="button"
             onClick={() => {
@@ -397,7 +495,7 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
             }`}
           >
             <Globe className="w-4 h-4 text-emerald-400 shrink-0" />
-            مجمع عمومی جهان
+            مجمع عمومی سازمان ملل
           </button>
 
           {myCoalition && (
@@ -419,7 +517,7 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
           )}
 
           <div className="text-[10px] font-bold text-slate-500 px-2 pt-1.5">
-            🔒 خط مستقیم با کشورها (بازیکن و هوش مصنوعی):
+            🔒 خط مستقیم با کشورها:
           </div>
 
           {Object.values(room.countries)
@@ -459,8 +557,7 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
             })}
         </div>
 
-        {/* Chat Area */}
-        <div className="md:col-span-2 flex flex-col justify-between h-[360px] md:h-[430px]">
+        <div className="md:col-span-2 flex flex-col justify-between h-[350px] md:h-[420px]">
           <div className="px-4 py-2.5 border-b border-slate-800 bg-[#07101f] flex items-center justify-between text-xs">
             {activeChatTarget === 'GLOBAL' ? (
               <span className="font-bold text-emerald-300 flex items-center gap-1.5">
@@ -468,11 +565,11 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
               </span>
             ) : activeChatTarget === 'COALITION' ? (
               <span className="font-bold text-purple-300 flex items-center gap-1.5">
-                <Shield className="w-4 h-4" /> اتاق رمزنگاری‌شده اعضای «{myCoalition?.nameFa}»
+                <Shield className="w-4 h-4" /> اتاق اعضای «{myCoalition?.nameFa}»
               </span>
             ) : (
               <span className="font-bold text-cyan-300 flex items-center gap-1.5">
-                <Lock className="w-4 h-4" /> مذاکره مستقیم با{' '}
+                <Lock className="w-4 h-4" /> خط مستقیم با{' '}
                 <CountryFlag countryId={activeChatTarget} size="sm" /> {room.countries[activeChatTarget]?.nameFa}
               </span>
             )}
@@ -481,7 +578,7 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
           <div className="flex-1 p-3 overflow-y-auto space-y-2">
             {filteredMessages.length === 0 ? (
               <div className="h-full flex items-center justify-center text-xs text-slate-400 text-center px-4 leading-relaxed">
-                💡 در چت با ربات‌ها می‌توانید با ارسال پیام دوستانه رابطه سیاسی را بالا ببرید، آن‌ها را تهدید به عقب‌نشینی کنید، یا با بردن نام یک کشور سوم (مثلاً «خطر حمله آمریکا») بینشان اختلاف بیندازید!
+                💡 با ارسال پیام دوستانه رابطه را تقویت کنید، یا از روی نقشه «درخواست راهبردی» رسمی ارسال نمایید.
               </div>
             ) : (
               filteredMessages.map((m) => {
@@ -514,7 +611,6 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
             )}
           </div>
 
-          {/* 1-Click Quick Diplomatic Cables */}
           <div className="px-2.5 py-1.5 border-t border-slate-800/80 bg-[#060c18] flex gap-1.5 overflow-x-auto text-[10px]">
             {QUICK_CABLES.map((cbl, idx) => (
               <button
@@ -538,7 +634,7 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
                   ? 'صدور بیانیه رسمی در مجمع عمومی...'
                   : activeChatTarget === 'COALITION'
                   ? 'پیام محرمانه به اعضای ائتلاف...'
-                  : 'مذاکره دوستانه، اولتیماتوم یا نام بردن کشور سوم برای اختلاف‌افکنی...'
+                  : 'ارسال پیام دیپلماتیک...'
               }
               className="flex-1 px-3 py-2 rounded-xl bg-[#050a14] border border-slate-700 focus:border-emerald-400 focus:outline-none text-xs text-white"
             />
@@ -553,34 +649,31 @@ export const DiplomacyChatPanel: React.FC<DiplomacyChatPanelProps> = ({
         </div>
       </div>
 
-      {/* Recent Trade Log */}
       {recentTrades.length > 0 && (
-        <div className="glass-card rounded-2xl p-3.5 space-y-2">
-          <h4 className="text-xs font-bold text-slate-300">📜 آخرین سوابق معاهدات و قراردادها</h4>
-          <div className="space-y-1.5">
-            {recentTrades.map((t) => (
-              <div
-                key={t.id}
-                className="px-3 py-2 rounded-xl bg-[#060c18] border border-slate-800/80 flex items-center justify-between gap-2 text-xs"
+        <div className="glass-card rounded-2xl p-3 space-y-1.5">
+          <h4 className="text-xs font-bold text-slate-300">📜 آخرین سوابق معاهدات</h4>
+          {recentTrades.map((t) => (
+            <div
+              key={t.id}
+              className="px-3 py-2 rounded-xl bg-[#060c18] border border-slate-800/80 flex items-center justify-between gap-2 text-xs"
+            >
+              <span className="text-slate-300 flex items-center gap-1.5 flex-wrap">
+                <CountryFlag countryId={t.from} size="sm" /> ← <CountryFlag countryId={t.to} size="sm" />:{' '}
+                {t.responseReasonFa || `پیشنهاد ${t.offerType} ($${t.priceB}B)`}
+              </span>
+              <span
+                className={`px-2 py-0.5 rounded font-bold text-[10px] shrink-0 ${
+                  t.status === 'ACCEPTED'
+                    ? 'bg-emerald-500/20 text-emerald-300'
+                    : t.status === 'REJECTED'
+                    ? 'bg-rose-500/20 text-rose-300'
+                    : 'bg-amber-500/20 text-amber-300'
+                }`}
               >
-                <span className="text-slate-300 flex items-center gap-1.5 flex-wrap">
-                  <CountryFlag countryId={t.from} size="sm" /> ← <CountryFlag countryId={t.to} size="sm" />:{' '}
-                  {t.responseReasonFa || `پیشنهاد ${t.offerType} ($${t.priceB}B)`}
-                </span>
-                <span
-                  className={`px-2 py-0.5 rounded font-bold text-[10px] shrink-0 ${
-                    t.status === 'ACCEPTED'
-                      ? 'bg-emerald-500/20 text-emerald-300'
-                      : t.status === 'REJECTED'
-                      ? 'bg-rose-500/20 text-rose-300'
-                      : 'bg-amber-500/20 text-amber-300'
-                  }`}
-                >
-                  {t.status === 'ACCEPTED' ? 'امضا شد' : t.status === 'REJECTED' ? 'رد شد' : 'در انتظار'}
-                </span>
-              </div>
-            ))}
-          </div>
+                {t.status === 'ACCEPTED' ? 'امضا شد' : t.status === 'REJECTED' ? 'رد شد' : 'در انتظار'}
+              </span>
+            </div>
+          ))}
         </div>
       )}
     </div>

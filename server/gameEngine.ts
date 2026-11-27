@@ -2,8 +2,11 @@ import {
   computeCountryMilitary,
   computeEconomyProjection,
   evaluateCovertOpDetails,
+  evaluateFalseFlagSabotageChance,
   evaluateMilitaryOpDetails,
   evaluateMinorOpDetails,
+  evaluateStrategicRequestChance,
+  getConstellationUpgradeInfo,
   getEmergencyActionCost,
   getGlobalSpotPrices,
   getIndigenousOrAllyWeaponCost,
@@ -11,8 +14,9 @@ import {
   getMaxBuildsPerRound,
   getMaxCovertOrdersPerRound,
   getMaxMilitaryOrdersPerRound,
+  getMaxSpotSalesPerRound,
   getMaxUpgradesPerRound,
-  getSatelliteLaunchCost,
+  getTotalConstellationSatellites,
   getUpgradeNextCost,
 } from '../shared/advisor.js';
 import {
@@ -25,12 +29,14 @@ import {
   INFRASTRUCTURE_CATALOG,
   INITIAL_CHOKEPOINTS,
   REAL_WORLD_EVENTS,
+  SPACE_CONSTELLATIONS_CATALOG,
   UPGRADE_TRACKS,
   WEAPONS_CATALOG,
 } from '../shared/realWorldData.js';
 import {
   AlertPosture,
   BattleOutcomeLog,
+  ChokepointId,
   ChokepointStatus,
   CinematicReplayEvent,
   CountryId,
@@ -39,6 +45,8 @@ import {
   CreatorCheatPayload,
   DefconLevel,
   DiplomaticActionKind,
+  DynamicMission,
+  DynamicMissionKind,
   EmergencyActionKind,
   GameOrder,
   GameRoomState,
@@ -50,16 +58,31 @@ import {
   MinorNationOpType,
   NewsItem,
   RankingEntry,
+  RequestLeverageMode,
   ResolutionKind,
   RevealedSnapshot,
   RoundSummaryForCountry,
+  SpaceConstellationId,
+  StrategicRequest,
+  StrategicRequestKind,
   StrikeTargetSector,
   TradeOffer,
   UltimatumDemand,
   UNResolution,
   UpgradeTrack,
 } from '../shared/types.js';
-import { adjustRelation, castAIVotesOnResolution, runLivingWorldAITurn } from './aiNations.js';
+import {
+  adjustRelation,
+  castAIVotesOnResolution,
+  runLivingWorldAITurn,
+  seedInitialAIStancesOnResolution,
+} from './aiNations.js';
+
+function pushPendingReplay(room: GameRoomState, ev: CinematicReplayEvent): void {
+  const holder = room as GameRoomState & { _queuedReplays?: CinematicReplayEvent[] };
+  if (!holder._queuedReplays) holder._queuedReplays = [];
+  holder._queuedReplays.push(ev);
+}
 
 function uid(prefix: string): string {
   return `${prefix}-${Math.random().toString(36).slice(2, 9)}-${Date.now().toString(36).slice(-4)}`;
@@ -76,53 +99,270 @@ export function getElapsedMatchMs(room: GameRoomState): number {
   return Math.max(base, base + (endRef - room.matchStartedAt - (room.accumulatedPausedMs || 0)));
 }
 
+function computeMissionCurrentValue(
+  room: GameRoomState,
+  c: CountryState,
+  kind: DynamicMissionKind
+): number {
+  const upgradeSum = Object.values(c.upgrades).reduce((a, b) => a + (b || 0), 0);
+  const minorControlled = Object.values(room.minorNations).filter(
+    (m) => m.conqueredBy === c.id || m.alignedWith === c.id
+  ).length;
+  const mil = computeCountryMilitary(c);
+  const totalSats = getTotalConstellationSatellites(c);
+
+  switch (kind) {
+    case 'ENERGY_EXPORT_DRIVE':
+      return Math.round(c.treasuryB + c.oilReserve);
+    case 'DIPLOMATIC_NETWORK':
+      return c.approval >= 74 ? c.allies.length + (c.secretAllies?.length || 0) : Math.max(0, c.allies.length - 1);
+    case 'REGIONAL_INFLUENCE':
+      return minorControlled;
+    case 'SPACE_CONSTELLATION':
+      return totalSats;
+    case 'DOCTRINE_BREAKTHROUGH':
+      return upgradeSum;
+    case 'STRATEGIC_DETERRENCE':
+      return mil.attackScore + mil.defenseScore;
+    case 'SANCTION_RESISTANCE':
+      return (c.upgrades.ECONOMIC_SOVEREIGNTY || 0) + (c.upgrades.INDUSTRY || 0);
+    case 'NATIONAL_RECONSTRUCTION':
+      return Math.max(0, 100 - c.devastation) + c.powerGrid;
+    case 'WELFARE_PROSPERITY':
+      return c.approval + c.powerGrid;
+    case 'COVERT_INTEL_SWEEP':
+      return Object.keys(c.knownIntel || {}).length + c.upgrades.INTELLIGENCE;
+  }
+}
+
+export function generateNextContextMission(
+  room: GameRoomState,
+  c: CountryState,
+  excludeKinds: DynamicMissionKind[]
+): DynamicMission {
+  const upgradeSum = Object.values(c.upgrades).reduce((a, b) => a + (b || 0), 0);
+  const minorControlled = Object.values(room.minorNations).filter(
+    (m) => m.conqueredBy === c.id || m.alignedWith === c.id
+  ).length;
+  const mil = computeCountryMilitary(c);
+  const totalSats = getTotalConstellationSatellites(c);
+  const tierScale = 1 + Math.floor((c.completedMissionsCount || 0) / 3);
+
+  const candidates: Array<{
+    weight: number;
+    kind: DynamicMissionKind;
+    categoryFa: string;
+    icon: string;
+    titleFa: string;
+    descFa: string;
+    targetValue: number;
+    rewardCashB: number;
+    rewardScore: number;
+    rewardBuffFa: string;
+  }> = [
+    {
+      weight: c.devastation >= 22 || c.powerGrid < 80 ? 10 : 2,
+      kind: 'NATIONAL_RECONSTRUCTION',
+      categoryFa: 'بازسازی و تاب‌آوری',
+      icon: '🏗️',
+      titleFa: 'عملیات بزرگ بازسازی ملی و پایداری برق',
+      descFa: 'مجموع شاخص (۱۰۰ منهای ویرانی) + پایداری شبکه برق را به حداقل ۱۸۲ برسانید.',
+      targetValue: 182,
+      rewardCashB: 58,
+      rewardScore: 95,
+      rewardBuffFa: '+$58B اعتبار بازسازی + ۹۵ امتیاز ثبات',
+    },
+    {
+      weight: c.sanctionedBy.length >= 2 ? 10 : 3,
+      kind: 'SANCTION_RESISTANCE',
+      categoryFa: 'اقتصاد مقاومتی',
+      icon: '🏦',
+      titleFa: 'سپر بانکی ضدتحریم و جهش صنعتی',
+      descFa: `مجموع سطح دکترین‌های «اقتصاد مقاومتی» و «ابرصنعت» را به ${Math.min(20, (c.upgrades.ECONOMIC_SOVEREIGNTY || 0) + (c.upgrades.INDUSTRY || 0) + 2)} برسانید.`,
+      targetValue: Math.min(20, (c.upgrades.ECONOMIC_SOVEREIGNTY || 0) + (c.upgrades.INDUSTRY || 0) + 2),
+      rewardCashB: 66,
+      rewardScore: 115,
+      rewardBuffFa: '+$66B ارز تجاری + ۱۱۵ امتیاز اقتصادی',
+    },
+    {
+      weight: totalSats < 9 ? 8 : 1,
+      kind: 'SPACE_CONSTELLATION',
+      categoryFa: 'فرماندهی فضایی',
+      icon: '🛰️',
+      titleFa: 'گسترش منظومه‌های ماهواره‌ای در مدار زمین',
+      descFa: `مجموع سطح ماهواره‌های فعال در منظومه‌های مداری خود را به ${Math.min(12, totalSats + 2)} برسانید.`,
+      targetValue: Math.min(12, totalSats + 2),
+      rewardCashB: 70,
+      rewardScore: 125,
+      rewardBuffFa: '+$70B بودجه فضایی + ۱۲۵ امتیاز فناوری',
+    },
+    {
+      weight: 6,
+      kind: 'DOCTRINE_BREAKTHROUGH',
+      categoryFa: 'مرجعیت علمی و دکترین',
+      icon: '🧬',
+      titleFa: 'جهش دکترین‌های راهبردی کشور',
+      descFa: `مجموع سطوح ۱۰ دکترین ملی خود را به ${Math.min(98, upgradeSum + 3)} برسانید.`,
+      targetValue: Math.min(98, upgradeSum + 3),
+      rewardCashB: 64,
+      rewardScore: 120,
+      rewardBuffFa: '+$64B پاداش علمی + ۱۲۰ امتیاز پیشرفت',
+    },
+    {
+      weight: c.allies.length < 5 ? 6 : 2,
+      kind: 'DIPLOMATIC_NETWORK',
+      categoryFa: 'دیپلماسی فعال',
+      icon: '🤝',
+      titleFa: 'گسترش پیمان‌های دفاعی و محبوبیت ملی',
+      descFa: `با حفظ رضایت بالای ۷۴٪، تعداد متحدان رسمی و محرمانه خود را به ${Math.max(3, c.allies.length + (c.secretAllies?.length || 0) + 1)} برسانید.`,
+      targetValue: Math.max(3, c.allies.length + (c.secretAllies?.length || 0) + 1),
+      rewardCashB: 56,
+      rewardScore: 110,
+      rewardBuffFa: '+$56B امتیاز تجاری + ۱۱۰ امتیاز نفوذ',
+    },
+    {
+      weight: 6,
+      kind: 'REGIONAL_INFLUENCE',
+      categoryFa: 'ژئوپولیتیک جهانی',
+      icon: '🏴',
+      titleFa: 'توسعه پایگاه‌های برون‌مرزی و کشورهای هم‌سو',
+      descFa: `تعداد کشورهای مستقل هم‌پیمان یا الحاق‌شده را به ${minorControlled + 2} برسانید.`,
+      targetValue: minorControlled + 2,
+      rewardCashB: 68,
+      rewardScore: 125,
+      rewardBuffFa: '+$68B درآمد راهبردی + ۱۲۵ امتیاز نفوذ',
+    },
+    {
+      weight: c.oilProduction >= 55 ? 6 : 3,
+      kind: 'ENERGY_EXPORT_DRIVE',
+      categoryFa: 'انرژی و خزانه',
+      icon: '🛢️',
+      titleFa: 'انباشت ذخایر راهبردی ارز و انرژی',
+      descFa: `مجموع خزانه ارزی + ذخیره نفت کشور را به ${Math.round(c.treasuryB + c.oilReserve + 140 * tierScale)} برسانید.`,
+      targetValue: Math.round(c.treasuryB + c.oilReserve + 140 * tierScale),
+      rewardCashB: 60,
+      rewardScore: 105,
+      rewardBuffFa: '+$60B سود صادراتی + ۱۰۵ امتیاز اقتصادی',
+    },
+    {
+      weight: 5,
+      kind: 'COVERT_INTEL_SWEEP',
+      categoryFa: 'اشراف اطلاعاتی',
+      icon: '🕵️',
+      titleFa: 'شبکه اشراف اطلاعاتی بر قدرت‌های جهان',
+      descFa: `مجموع پرونده‌های اشراف فعال روی رقبا + سطح سازمان اطلاعات را به ${Object.keys(c.knownIntel || {}).length + c.upgrades.INTELLIGENCE + 2} برسانید.`,
+      targetValue: Object.keys(c.knownIntel || {}).length + c.upgrades.INTELLIGENCE + 2,
+      rewardCashB: 54,
+      rewardScore: 105,
+      rewardBuffFa: '+$54B بودجه ویژه + ۱۰۵ امتیاز اطلاعاتی',
+    },
+    {
+      weight: mil.totalUnits < 20 ? 5 : 2,
+      kind: 'STRATEGIC_DETERRENCE',
+      categoryFa: 'بازدارندگی دفاعی',
+      icon: '🛡️',
+      titleFa: 'ارتقای سپر بازدارندگی نیروهای مسلح',
+      descFa: `مجموع شاخص قدرت تهاجمی و پدافندی ارتش خود را به ${mil.attackScore + mil.defenseScore + 110} برسانید.`,
+      targetValue: mil.attackScore + mil.defenseScore + 110,
+      rewardCashB: 58,
+      rewardScore: 100,
+      rewardBuffFa: '+$58B بودجه دفاعی + ۱۰۰ امتیاز بازدارندگی',
+    },
+  ];
+
+  const filtered = candidates.filter((cand) => !excludeKinds.includes(cand.kind));
+  const pool = filtered.length > 0 ? filtered : candidates;
+  const totalW = pool.reduce((s, x) => s + x.weight, 0);
+  let r = Math.random() * totalW;
+  let picked = pool[0];
+  for (const item of pool) {
+    r -= item.weight;
+    if (r <= 0) {
+      picked = item;
+      break;
+    }
+  }
+
+  return {
+    id: uid('msn-dyn'),
+    kind: picked.kind,
+    categoryFa: picked.categoryFa,
+    icon: picked.icon,
+    titleFa: picked.titleFa,
+    descFa: picked.descFa,
+    targetValue: picked.targetValue,
+    currentValue: computeMissionCurrentValue(room, c, picked.kind),
+    rewardCashB: picked.rewardCashB,
+    rewardScore: picked.rewardScore,
+    rewardBuffFa: picked.rewardBuffFa,
+    completed: false,
+    completedRound: null,
+    createdRound: room.round,
+  };
+}
+
 export function refreshSecretMissions(room: GameRoomState): void {
   for (const c of Object.values(room.countries)) {
-    if (c.isEliminated || !c.secretMissions) continue;
-    const upgradeSum = Object.values(c.upgrades).reduce((a, b) => a + b, 0);
-    const minorControlled = Object.values(room.minorNations).filter(
-      (m) => m.conqueredBy === c.id || m.alignedWith === c.id
-    ).length;
+    if (c.isEliminated) continue;
+    if (!c.secretMissions) c.secretMissions = [];
 
-    for (const m of c.secretMissions) {
-      if (m.kind === 'ENERGY_WEALTH') {
-        m.currentValue = Math.round(c.treasuryB + c.oilReserve);
-      } else if (m.kind === 'DIPLOMATIC_PEACE') {
-        const pactCount = c.allies.length + (c.secretAllies?.length || 0);
-        m.currentValue = c.approval >= 82 ? pactCount : Math.min(m.targetValue - 1, pactCount);
-      } else if (m.kind === 'REGIONAL_INFLUENCE') {
-        m.currentValue = minorControlled;
-      } else if (m.kind === 'SPACE_TECH_MASTER') {
-        const satPart = Math.min(2, c.orbitalSatellites || 0);
-        const docPart = Math.min(18, upgradeSum);
-        m.currentValue = satPart + docPart;
-      }
+    // Ensure every country always has 3 active dynamic missions!
+    while (c.secretMissions.length < 3) {
+      const existingKinds = c.secretMissions.map((x) => x.kind);
+      c.secretMissions.push(generateNextContextMission(room, c, existingKinds));
+    }
+
+    for (let i = 0; i < c.secretMissions.length; i++) {
+      const m = c.secretMissions[i];
+      m.currentValue = computeMissionCurrentValue(room, c, m.kind);
 
       if (!m.completed && m.currentValue >= m.targetValue) {
         m.completed = true;
         m.completedRound = room.round;
         c.treasuryB += m.rewardCashB;
         c.missionBonusScore = (c.missionBonusScore || 0) + m.rewardScore;
+        c.completedMissionsCount = (c.completedMissionsCount || 0) + 1;
+
         addIntel(
           c,
           room.round,
           'SUCCESS',
-          `🏅 تکمیل ماموریت مخفی: ${m.titleFa}`,
-          `پاداش ویژه راهبردی (+$${m.rewardCashB}B بودجه و +${m.rewardScore} امتیاز پیروزی) به حساب کشور شما واریز شد!`
+          `🎯 ماموریت تکمیل شد: ${m.titleFa}`,
+          `پاداش ماموریت (+$${m.rewardCashB}B بودجه و +${m.rewardScore} امتیاز پیروزی) به حساب کشور شما واریز شد و ماموریت جدید جایگزین گردید!`
         );
-        if (c.secretMissions.every((x) => x.completed)) {
-          c.missionBonusScore += 150;
-          addIntel(
-            c,
-            room.round,
-            'SUCCESS',
-            '👑 تکمیل هر ۲ ماموریت مخفی کارزار!',
-            'نشان عالی استراتژیست جهانی (+۱۵۰ امتیاز پیروزی نهایی) برای کشور شما ثبت گردید!'
-          );
-        }
+
+        // Immediately rotate in a fresh context-aware mission!
+        const otherKinds = c.secretMissions.filter((_, idx) => idx !== i).map((x) => x.kind);
+        c.secretMissions[i] = generateNextContextMission(room, c, [...otherKinds, m.kind]);
       }
     }
   }
+}
+
+export function rerollCountryMission(
+  room: GameRoomState,
+  countryId: CountryId,
+  missionId: string
+): { ok: boolean; messageFa?: string; errorFa?: string } {
+  const c = room.countries[countryId];
+  if (!c || c.isEliminated) return { ok: false, errorFa: 'کشور غیرفعال است.' };
+  if (room.isPaused) return { ok: false, errorFa: 'بازی متوقف شده است.' };
+  if ((c.missionRerollsUsedThisRound || 0) >= 1) {
+    return { ok: false, errorFa: 'در هر ماه حداکثر ۱ بار می‌توانید ماموریت را رایگان تعویض کنید.' };
+  }
+  const idx = c.secretMissions.findIndex((m) => m.id === missionId);
+  if (idx === -1) return { ok: false, errorFa: 'ماموریت مورد نظر یافت نشد.' };
+
+  const old = c.secretMissions[idx];
+  const exclude = c.secretMissions.map((m) => m.kind);
+  const nextMission = generateNextContextMission(room, c, exclude);
+  c.secretMissions[idx] = nextMission;
+  c.missionRerollsUsedThisRound = (c.missionRerollsUsedThisRound || 0) + 1;
+
+  return {
+    ok: true,
+    messageFa: `🔄 ماموریت «${old.titleFa}» تعویض شد و ماموریت جدید «${nextMission.titleFa}» فعال گردید!`,
+  };
 }
 
 export function createNewRoomState(
@@ -139,7 +379,7 @@ export function createNewRoomState(
   const cal = getCalendarLabelFa(1);
 
   const room: GameRoomState = {
-    schemaVersion: 5,
+    schemaVersion: 6,
     roomCode,
     roomName: roomName || `اتاق جنگ ${roomCode}`,
     createdAt: Date.now(),
@@ -189,21 +429,22 @@ export function createNewRoomState(
         agencyFa: 'رویترز جهانی / شورای امنیت سازمان ملل',
         category: 'WORLD_EVENT',
         breaking: true,
-        headlineFa: `آغاز کارزار جهانی فرماندهی کل ۵.۰ (${
+        headlineFa: `آغاز کارزار جهانی فرماندهی کل ۶.۰ (${
           settings.difficulty === 'EXTREME'
             ? 'درجه سختی فوق‌سنگین'
             : settings.difficulty === 'HARD'
             ? 'درجه سختی چالشی'
-            : 'متعادل'
-        })؛ ماموریت‌های مخفی، فرماندهی فضایی و نبرد زنده فعال شدند`,
+            : 'استاندارد راهبردی'
+        })؛ ۴ منظومه فضایی، ماموریت‌های پویا و درخواست‌های هوشمند فعال شدند`,
         bodyFa:
-          'تمامی ۲۰ قدرت راهبردی و ۱۵۵ کشور مستقل جهان فعال شدند. پیمان‌های دفاعی پشت‌پرده، جنگ نیابتی، ماهواره‌های مداری و پخش زنده سینمایی نبردها آماده بهره‌برداری است.',
+          'اقتصاد کلان با هزینه‌های نگهداری واقعی، ۱۰ دکترین ملی، ۴ منظومه مداری، عملیات پرچم دروغین و سینمای خبری جهان آماده نبرد راهبردی است.',
         involvedCountries: [],
       },
     ],
     battles: [],
     visualEvents: [],
     trades: [],
+    strategicRequests: [],
     messages: [],
     resolutions: [],
     winnerSummaryFa: null,
@@ -222,7 +463,7 @@ export function prepareResumedRoom(
   newCode: string
 ): GameRoomState {
   const cloned = JSON.parse(JSON.stringify(savedRoom)) as GameRoomState;
-  cloned.schemaVersion = 5;
+  cloned.schemaVersion = 6;
   cloned.savedElapsedMs = getElapsedMatchMs(savedRoom);
   cloned.matchStartedAt = null;
   cloned.pausedAt = null;
@@ -235,6 +476,7 @@ export function prepareResumedRoom(
   cloned.phaseEndsAt = null;
   cloned.isResumedSave = true;
   cloned.winnerSummaryFa = null;
+  if (!cloned.strategicRequests) cloned.strategicRequests = [];
 
   for (const c of Object.values(cloned.countries)) {
     c.playerId = null;
@@ -244,8 +486,24 @@ export function prepareResumedRoom(
     c.incomingAlertActive = false;
     c.alertPostureConfirmed = false;
     if (!c.secretAllies) c.secretAllies = [];
-    if (c.orbitalSatellites === undefined) c.orbitalSatellites = 0;
+    if (!c.constellations) {
+      c.constellations = {
+        RECON_OPTICAL: Math.min(3, c.orbitalSatellites || 0),
+        GNSS_NAVI: 0,
+        SBIRS_SHIELD: 0,
+        SATCOM_EW: 0,
+      };
+    }
+    c.orbitalSatellites = getTotalConstellationSatellites(c);
+    if (c.upgrades.SPACE_ORBITAL === undefined) c.upgrades.SPACE_ORBITAL = 2;
+    if (c.upgrades.ECONOMIC_SOVEREIGNTY === undefined) c.upgrades.ECONOMIC_SOVEREIGNTY = 2;
     if (c.missionBonusScore === undefined) c.missionBonusScore = 0;
+    if (c.completedMissionsCount === undefined) c.completedMissionsCount = 0;
+    if (c.missionRerollsUsedThisRound === undefined) c.missionRerollsUsedThisRound = 0;
+    if (c.spotSalesUsedThisRound === undefined) c.spotSalesUsedThisRound = 0;
+    if (!c.requestsSentToThisRound) c.requestsSentToThisRound = [];
+    if (!c.sabotageCooldowns) c.sabotageCooldowns = {};
+    c.secretMissions = [];
   }
 
   cloned.players = [
@@ -313,9 +571,11 @@ export function resetRoomForRematch(room: GameRoomState): void {
   room.battles = [];
   room.visualEvents = [];
   room.trades = [];
+  room.strategicRequests = [];
   room.messages = [];
   room.resolutions = [];
   room.winnerSummaryFa = null;
+  delete (room as GameRoomState & { _queuedReplays?: CinematicReplayEvent[] })._queuedReplays;
 
   room.players = room.players.filter((p) => p.connected);
   for (const p of room.players) {
@@ -356,42 +616,49 @@ export function updateRankingsAndDefcon(room: GameRoomState): void {
 
   const rawList: RankingEntry[] = Object.values(room.countries).map((c) => {
     const mil = computeCountryMilitary(c);
-    const upgradeSum = Object.values(c.upgrades).reduce((a, b) => a + b, 0);
+    const upgradeSum = Object.values(c.upgrades).reduce((a, b) => a + (b || 0), 0);
     const territoriesCount = annexedCountByCountry[c.id] || 0;
     const protectorates = protectorateByCountry[c.id] || 0;
+    const totalSats = getTotalConstellationSatellites(c);
+    const infraSum = Object.values(c.infrastructure).reduce((a, b) => a + (b || 0), 0);
 
+    // Anti-Weapon-Spam Balanced Leaderboard Formula (v6.0 Item #8!):
+    // Military units use diminishing returns (Math.sqrt) + hard cap (350 pts) so hoarding weapons
+    // cannot win the game! Players & AI must build GDP, Science, Space, Welfare, Alliances & Missions!
     const economicScore = Math.round(
-      c.treasuryB * 0.36 +
-        c.gdpB * 0.24 +
-        (c.oilReserve + c.gasReserve + c.foodReserve + (c.waterReserve || 0)) * 0.12 +
-        Object.values(c.infrastructure).reduce((a, b) => a + b, 0) * 10 +
-        territoriesCount * 34
+      c.gdpB * 0.34 +
+        Math.min(480, c.treasuryB) * 0.22 +
+        Math.min(900, c.oilReserve + c.gasReserve + c.foodReserve + (c.waterReserve || 0)) * 0.08 +
+        infraSum * 11 +
+        (c.upgrades.ECONOMIC_SOVEREIGNTY || 0) * 14 +
+        territoriesCount * 36
     );
-    const militaryScore = Math.round(
-      mil.attackScore * 0.48 + mil.defenseScore * 0.44 + c.warheads * 18 + mil.totalUnits * 3.5
-    );
+    const rawCombatPower = mil.attackScore + mil.defenseScore;
+    const cappedDeterrence = Math.round(Math.sqrt(Math.max(0, rawCombatPower)) * 8.4);
+    const warheadDeterrence = Math.round(Math.sqrt(Math.max(0, c.warheads)) * 22);
+    const militaryScore = Math.min(350, cappedDeterrence + warheadDeterrence + mil.veteranStars * 14);
+
     const techScore = Math.round(
-      upgradeSum * 14 +
-        (c.infrastructure.SCIENCE_ACADEMY || 0) * 14 +
-        (c.orbitalSatellites || 0) * 32 +
-        c.techLevel * 9 +
-        c.upgrades.CYBER_AI * 8 +
-        c.upgrades.AEROSPACE * 6
+      upgradeSum * 13 +
+        (c.infrastructure.SCIENCE_ACADEMY || 0) * 16 +
+        totalSats * 26 +
+        c.techLevel * 10 +
+        (c.upgrades.SPACE_ORBITAL || 0) * 10
     );
     const stabilityScore = Math.max(
       0,
-      Math.round(c.approval * 2.0 + c.powerGrid * 0.95 + c.integrityPct * 0.95 - c.devastation * 1.65)
+      Math.round(c.approval * 2.2 + c.powerGrid * 1.1 + c.integrityPct * 1.1 - c.devastation * 1.85)
     );
     const influenceScore = Math.max(
       0,
       Math.round(
-        c.allies.length * 25 +
-          territoriesCount * 30 +
-          protectorates * 16 +
-          (c.coalitionId ? 24 : 0) +
+        c.allies.length * 28 +
+          territoriesCount * 34 +
+          protectorates * 18 +
+          (c.coalitionId ? 26 : 0) +
           (c.missionBonusScore || 0) +
-          c.upgrades.INTELLIGENCE * 12 -
-          c.sanctionedBy.length * 10
+          c.upgrades.INTELLIGENCE * 11 -
+          c.sanctionedBy.length * 12
       )
     );
 
@@ -623,8 +890,15 @@ export function instantUpgradeTrack(
 
   if (track === 'CYBER_AI') c.cyberShield = clamp(c.cyberShield + 5, 0, 99);
   if (track === 'INTELLIGENCE') c.intelLevel = clamp(c.intelLevel + 1, 1, 12);
-  if (track === 'AEROSPACE') c.techLevel = clamp(c.techLevel + 1, 1, 12);
+  if (track === 'AEROSPACE' || track === 'SPACE_ORBITAL') c.techLevel = clamp(c.techLevel + 1, 1, 12);
   if (track === 'INDUSTRY') c.gdpB += 32;
+  if (track === 'ECONOMIC_SOVEREIGNTY') {
+    c.gdpB += 20;
+    c.approval = clamp(c.approval + 3, 0, 100);
+  }
+  if (track === 'SPACE_ORBITAL' && nextLv === 10) {
+    c.radarIntegrity = 100;
+  }
   if (track === 'NUCLEAR') {
     c.nuclearProgress = clamp(nextLv * 20, c.nuclearProgress, 100);
     if (nextLv === 3) {
@@ -656,44 +930,74 @@ export function instantUpgradeTrack(
   };
 }
 
-export function instantLaunchSatellite(
+export function instantUpgradeConstellation(
   room: GameRoomState,
-  countryId: CountryId
+  countryId: CountryId,
+  constellationId: SpaceConstellationId
 ): { ok: boolean; errorFa?: string; messageFa?: string } {
   const c = room.countries[countryId];
-  if (!c || c.isEliminated) return { ok: false, errorFa: 'کشور غیرفعال است.' };
-  if (room.phase !== 'PLANNING') return { ok: false, errorFa: 'پرتاب ماهواره فقط در فاز برنامه‌ریزی مجاز است.' };
+  const spec = SPACE_CONSTELLATIONS_CATALOG[constellationId];
+  if (!c || c.isEliminated || !spec) return { ok: false, errorFa: 'منظومه فضایی نامعتبر است.' };
+  if (room.phase !== 'PLANNING') return { ok: false, errorFa: 'پرتاب فضایی فقط در فاز برنامه‌ریزی مجاز است.' };
   if (room.isPaused) return { ok: false, errorFa: 'بازی متوقف شده است.' };
-  if ((c.orbitalSatellites || 0) >= 3) {
-    return { ok: false, errorFa: 'شبکه مداری شما در سقف ظرفیت (۳ از ۳ ماهواره فعال) قرار دارد!' };
-  }
-  if (c.upgrades.AEROSPACE < 2) {
-    return { ok: false, errorFa: 'پرتاب ماهواره نیازمند «دکترین هوافضا سطح ۲» است!' };
-  }
-  const cost = getSatelliteLaunchCost(c, room.settings.difficulty);
-  if (c.treasuryB < cost) {
-    return { ok: false, errorFa: `بودجه کافی نیست! پرتاب ماهواره $${cost}B نیاز دارد.` };
+
+  const info = getConstellationUpgradeInfo(c, constellationId, room.settings.difficulty);
+  if (!info.canUpgrade) {
+    return { ok: false, errorFa: info.lockedReasonFa || 'پیش‌نیاز پرتاب فضایی فراهم نیست.' };
   }
 
-  c.treasuryB -= cost;
-  c.orbitalSatellites = (c.orbitalSatellites || 0) + 1;
-  c.radarIntegrity = 100;
+  c.treasuryB -= info.costB;
+  c.oilReserve = Math.max(0, c.oilReserve - info.fuelCost);
+  const nextLv = info.currentLevel + 1;
+  c.constellations[constellationId] = nextLv;
+  c.orbitalSatellites = getTotalConstellationSatellites(c);
+  if (constellationId === 'SBIRS_SHIELD') c.radarIntegrity = 100;
+  if (constellationId === 'SATCOM_EW') c.cyberShield = clamp(c.cyberShield + 6, 0, 99);
 
+  const hl = `🛰️ پرتاب مداری موفق: ${c.nameFa} «${spec.nameFa}» را به سطح ${nextLv}/3 ارتقا داد!`;
   addNews(room, {
     agencyFa: 'فرماندهی فضایی / رویترز فناوری',
     category: 'WORLD_EVENT',
-    breaking: false,
-    headlineFa: `🛰️ پرتاب فضایی موفق: ماهواره نظامی-اطلاعاتی شماره ${c.orbitalSatellites} ${c.nameFa} در مدار زمین قرار گرفت!`,
-    bodyFa: 'دقت هدف‌گیری موشکی، سپر هشدار سریع و درآمد ارتباطی این کشور تقویت شد.',
+    breaking: nextLv >= 2,
+    headlineFa: hl,
+    bodyFa: spec.perLevelBonusFa,
     involvedCountries: [c.id],
+  });
+
+  pushPendingReplay(room, {
+    id: uid('rep-sat'),
+    round: room.round,
+    from: c.coordinates,
+    to: [c.coordinates[0] + 6, Math.min(72, c.coordinates[1] + 10)],
+    attackerId: c.id,
+    attackerNameFa: c.nameFa,
+    defenderId: c.id,
+    targetNameFa: spec.nameFa,
+    kind: 'SPACE_LAUNCH',
+    succeeded: true,
+    intercepted: false,
+    headlineFa: hl,
+    impactBadgeFa: `${spec.icon} استقرار منظومه سطح ${nextLv} در مدار!`,
+    categoryLabelFa: 'فرماندهی فضایی و مدار زمین',
   });
 
   refreshSecretMissions(room);
   updateRankingsAndDefcon(room);
   return {
     ok: true,
-    messageFa: `🛰️ ماهواره شماره ${c.orbitalSatellites}/3 با موفقیت در مدار قرار گرفت (+دقت موشکی، +رهگیری و +$10B درآمد ماهانه)!`,
+    messageFa: `${spec.icon} «${spec.nameFa}» با موفقیت به سطح ${nextLv}/3 در مدار زمین رسید!`,
   };
+}
+
+export function instantLaunchSatellite(
+  room: GameRoomState,
+  countryId: CountryId
+): { ok: boolean; errorFa?: string; messageFa?: string } {
+  const c = room.countries[countryId];
+  if (!c) return { ok: false, errorFa: 'کشور نامعتبر است.' };
+  const order: SpaceConstellationId[] = ['RECON_OPTICAL', 'GNSS_NAVI', 'SBIRS_SHIELD', 'SATCOM_EW'];
+  const pick = order.sort((a, b) => (c.constellations[a] || 0) - (c.constellations[b] || 0))[0];
+  return instantUpgradeConstellation(room, countryId, pick);
 }
 
 export function instantRespondFlashpoint(
@@ -995,6 +1299,13 @@ export function instantSpotTrade(
     if (resource === 'URANIUM') {
       return { ok: false, errorFa: 'فروش اورانیوم در بورس آزاد مجاز نیست؛ از قرارداد دوجانبه استفاده کنید.' };
     }
+    const maxSales = getMaxSpotSalesPerRound(c);
+    if ((c.spotSalesUsedThisRound || 0) >= maxSales) {
+      return {
+        ok: false,
+        errorFa: `سقف فروش در بورس آزاد این ماه (${maxSales}/${maxSales}) پر شده است! برای فروش بیشتر با سایر کشورها قرارداد دوجانبه ببندید یا دکترین «اقتصاد مقاومتی» را ارتقا دهید.`,
+      };
+    }
     const qty = 50;
     const rawGain =
       resource === 'OIL'
@@ -1004,7 +1315,7 @@ export function instantSpotTrade(
         : resource === 'FOOD'
         ? spot.foodSell50B
         : spot.waterSell50B;
-    const gain = Math.max(8, Math.round(rawGain * sanctionDiscount));
+    const gain = Math.max(6, Math.round(rawGain * sanctionDiscount));
 
     if (resource === 'OIL') {
       if (c.oilReserve < qty) return { ok: false, errorFa: 'حداقل ۵۰ واحد نفت در انبار نیاز دارید.' };
@@ -1020,9 +1331,14 @@ export function instantSpotTrade(
       c.waterReserve -= qty;
     }
 
+    c.spotSalesUsedThisRound = (c.spotSalesUsedThisRound || 0) + 1;
     c.treasuryB += gain;
+    refreshSecretMissions(room);
     updateRankingsAndDefcon(room);
-    return { ok: true, messageFa: `💰 ۵۰ واحد در بورس جهانی فروخته شد و +$${gain}B نقد به خزانه آمد!` };
+    return {
+      ok: true,
+      messageFa: `💰 ۵۰ واحد در بورس جهانی فروخته شد (+$${gain}B | فروش ${c.spotSalesUsedThisRound}/${maxSales} این ماه)`,
+    };
   }
 }
 
@@ -1072,6 +1388,28 @@ export function instantSetChokepoint(
     });
   }
 
+  pushPendingReplay(room, {
+    id: uid('rep-cp'),
+    round: room.round,
+    from: actor.coordinates,
+    to: cp.coordinates,
+    attackerId: countryId,
+    attackerNameFa: actor.nameFa,
+    targetNameFa: cp.nameFa,
+    kind: 'CHOKEPOINT',
+    succeeded: true,
+    intercepted: status === 'OPEN',
+    headlineFa:
+      status === 'BLOCKADED'
+        ? `⚓ انسداد استراتژیک! ناوگان ${actor.nameFa} آبراه «${cp.nameFa}» را بست (نفت: $${room.market.oilPriceUsd})`
+        : status === 'RESTRICTED'
+        ? `⚓ برقراری ایست بازرسی نظامی در «${cp.nameFa}» توسط ${actor.nameFa}`
+        : `⚓ بازگشایی کامل کشتیرانی بین‌المللی در «${cp.nameFa}» توسط ${actor.nameFa}`,
+    impactBadgeFa:
+      status === 'BLOCKADED' ? '🚨 انسداد کامل آبراه!' : status === 'RESTRICTED' ? '⚠️ بازرسی نظامی!' : '✅ آبراه آزاد شد!',
+    categoryLabelFa: 'ژئوپولیتیک آبراه‌ها و انرژی',
+  });
+
   updateRankingsAndDefcon(room);
   return { ok: true, messageFa: `وضعیت «${cp.nameFa}» بروزرسانی شد.` };
 }
@@ -1119,6 +1457,499 @@ export function instantMinorDiplomacyPact(
   };
 }
 
+export function executeFalseFlagSabotage(
+  room: GameRoomState,
+  actorId: CountryId,
+  targetId: CountryId,
+  thirdId: CountryId
+): { ok: boolean; errorFa?: string; messageFa?: string } {
+  if (room.isPaused) return { ok: false, errorFa: 'بازی متوقف شده است.' };
+  if (room.phase !== 'PLANNING') return { ok: false, errorFa: 'این عملیات فقط در فاز برنامه‌ریزی ماه مجاز است.' };
+  const actor = room.countries[actorId];
+  const target = room.countries[targetId];
+  const third = room.countries[thirdId];
+  if (!actor || !target || !third || actor.isEliminated || target.isEliminated || third.isEliminated) {
+    return { ok: false, errorFa: 'کشورهای هدف نامعتبر هستند.' };
+  }
+
+  const check = evaluateFalseFlagSabotageChance(actor, target, third, room.round);
+  if (!check.canExecute) {
+    return { ok: false, errorFa: check.errorFa || 'شرایط عملیات فراهم نیست.' };
+  }
+
+  actor.treasuryB -= check.costB;
+  actor.covertOrdersUsedThisRound += 1;
+  const pairKey = [target.id, third.id].sort().join('-');
+  if (!actor.sabotageCooldowns) actor.sabotageCooldowns = {};
+  actor.sabotageCooldowns[pairKey] = room.round + 3;
+
+  const succeeded = Math.random() * 100 < check.winPct;
+  const exposed = !succeeded && Math.random() * 100 < check.exposureRiskPct;
+
+  if (succeeded) {
+    const wereAllies = target.allies.includes(third.id);
+    adjustRelation(target, third, -check.expectedRelDrop);
+    const newRel = target.relations[third.id];
+
+    let allianceBroken = false;
+    if ((wereAllies && newRel < 38) || (!wereAllies && newRel < 15)) {
+      if (wereAllies || target.secretAllies?.includes(third.id)) allianceBroken = true;
+      target.allies = target.allies.filter((id) => id !== third.id);
+      third.allies = third.allies.filter((id) => id !== target.id);
+      target.secretAllies = (target.secretAllies || []).filter((id) => id !== third.id);
+      third.secretAllies = (third.secretAllies || []).filter((id) => id !== target.id);
+      target.airspaceOpenTo = target.airspaceOpenTo.filter((id) => id !== third.id);
+      third.airspaceOpenTo = third.airspaceOpenTo.filter((id) => id !== target.id);
+    }
+
+    // Trigger genuine geopolitical & military fallout when relations turn hostile!
+    if (newRel <= -25) {
+      if (!target.sanctionedBy.includes(third.id)) target.sanctionedBy.push(third.id);
+      if (!third.sanctionedBy.includes(target.id)) third.sanctionedBy.push(target.id);
+      if (target.playerId === null && newRel <= -40) target.lastAttackedBy = third.id;
+      if (third.playerId === null && newRel <= -45) third.lastAttackedBy = target.id;
+    }
+
+    const hl = allianceBroken
+      ? `🕵️ زلزله دیپلماتیک! انفجار مشکوک و افشای اسناد امنیتی، پیمان اتحاد میان ${target.nameFa} و ${third.nameFa} را متلاشی کرد!`
+      : `🕵️ بحران شدید امنیتی میان ${target.nameFa} و ${third.nameFa} پس از حادثه مشکوک پرچم دروغین!`;
+
+    addNews(room, {
+      agencyFa: 'الجزیره فوری / رویترز امنیتی',
+      category: 'ESPIONAGE',
+      breaking: true,
+      headlineFa: hl,
+      bodyFa: `سفیران دو کشور فراخوانده شدند و شاخص روابط دوجانبه به ${newRel} سقوط کرد.`,
+      involvedCountries: [target.id, third.id],
+    });
+
+    pushPendingReplay(room, {
+      id: uid('rep-ff'),
+      round: room.round,
+      from: target.coordinates,
+      to: third.coordinates,
+      attackerId: target.id,
+      attackerNameFa: target.nameFa,
+      defenderId: third.id,
+      targetNameFa: third.nameFa,
+      kind: 'DIPLOMACY_SHOCK',
+      succeeded: true,
+      intercepted: false,
+      headlineFa: hl,
+      impactBadgeFa: allianceBroken ? '💥 فروپاشی اتحاد راهبردی!' : `🔥 سقوط رابطه به ${newRel}!`,
+      categoryLabelFa: 'عملیات اطلاعاتی و بحران دیپلماتیک',
+    });
+
+    refreshSecretMissions(room);
+    updateRankingsAndDefcon(room);
+    return {
+      ok: true,
+      messageFa: `🕵️ عملیات پرچم دروغین موفق شد! رابطه ${target.nameFa} و ${third.nameFa} به ${newRel} سقوط کرد${
+        allianceBroken ? ' و اتحاد نظامی آن‌ها فروپاشید!' : '!'
+      }`,
+    };
+  }
+
+  if (exposed) {
+    adjustRelation(actor, target, -22);
+    adjustRelation(actor, third, -18);
+    if (!actor.sanctionedBy.includes(target.id)) actor.sanctionedBy.push(target.id);
+    addNews(room, {
+      agencyFa: 'رویترز امنیتی (افشاگری اطلاعاتی)',
+      category: 'ESPIONAGE',
+      breaking: true,
+      headlineFa: `🚨 شکست و افشای عملیات پرچم دروغین ${actor.nameFa} (${actor.agencyCode}) برای بحران‌سازی میان ${target.nameFa} و ${third.nameFa}!`,
+      bodyFa: 'ضدجاسوسی مشترک دو کشور عوامل نفوذی را دستگیر کرد و تحریم دیپلماتیک علیه آمران وضع شد.',
+      involvedCountries: [actor.id, target.id, third.id],
+    });
+    updateRankingsAndDefcon(room);
+    return {
+      ok: false,
+      errorFa: `🚨 عملیات شکست خورد و هویت سرویس اطلاعاتی شما (${actor.agencyCode}) لو رفت! روابط با هر دو کشور تیره شد.`,
+    };
+  }
+
+  updateRankingsAndDefcon(room);
+  return {
+    ok: false,
+    errorFa: `ضدجاسوسی ${target.agencyCode} اسناد جعلی را خنثی کرد، اما تیم عملیاتی شما بدون افشای هویت کشور بازگشت.`,
+  };
+}
+
+function buildStrategicRequestSummaryFa(
+  room: GameRoomState,
+  from: CountryState,
+  to: CountryState,
+  kind: StrategicRequestKind,
+  thirdCountry?: CountryId,
+  chokepointId?: ChokepointId
+): string {
+  const thirdName = thirdCountry ? room.countries[thirdCountry]?.nameFa || thirdCountry : '';
+  const cpName = chokepointId ? room.chokepoints[chokepointId]?.nameFa || chokepointId : '';
+  switch (kind) {
+    case 'OPEN_CHOKEPOINT':
+      return `بازگشایی کامل آبراه «${cpName}» توسط ${to.nameFa}`;
+    case 'BLOCKADE_CHOKEPOINT':
+      return `مسدودسازی نظامی «${cpName}» توسط ${to.nameFa}`;
+    case 'FORM_FRIENDSHIP':
+      return `پیمان دوستی، لغو تحریم و گشایش حریم هوایی میان ${from.nameFa} و ${to.nameFa}`;
+    case 'JOINT_MILITARY_STRIKE':
+      return `حمله نظامی مشترک ${to.nameFa} علیه مواضع ${thirdName}`;
+    case 'JOINT_CYBER_SABOTAGE':
+      return `عملیات سایبری و هک زیرساخت‌های ${thirdName} توسط ${to.nameFa}`;
+    case 'IMPOSE_SANCTION':
+      return `اعمال تحریم اقتصادی علیه ${thirdName} توسط ${to.nameFa}`;
+    case 'LIFT_SANCTION_ON_ME':
+      return `لغو تحریم‌های اقتصادی ${to.nameFa} علیه ${from.nameFa}`;
+    case 'CEASEFIRE_WITH_ME':
+      return `آتش‌بس فوری و پیمان عدم تعرض ۳ ماهه با ${from.nameFa}`;
+    case 'ECONOMIC_AID':
+      return `ارسال بسته کمک اضطراری مالی و انرژی از سوی ${to.nameFa} به ${from.nameFa}`;
+  }
+}
+
+export function executeAcceptedStrategicRequest(
+  room: GameRoomState,
+  req: StrategicRequest
+): { ok: boolean; effectFa: string; errorFa?: string } {
+  const fromC = room.countries[req.from];
+  const toC = room.countries[req.to];
+  if (!fromC || !toC || fromC.isEliminated || toC.isEliminated) {
+    return { ok: false, effectFa: '', errorFa: 'کشورهای طرف توافق غیرفعال هستند.' };
+  }
+
+  if (req.leverage === 'DIPLOMATIC_INCENTIVE' && req.offeredCashB > 0) {
+    if (fromC.treasuryB < req.offeredCashB) {
+      return { ok: false, effectFa: '', errorFa: `خزانه ${fromC.nameFa} برای پرداخت مشوق $${req.offeredCashB}B کافی نیست.` };
+    }
+    fromC.treasuryB -= req.offeredCashB;
+    toC.treasuryB += req.offeredCashB;
+  }
+
+  let effectFa = '';
+  const thirdC = req.thirdCountry ? room.countries[req.thirdCountry] : null;
+
+  switch (req.kind) {
+    case 'OPEN_CHOKEPOINT': {
+      const cp = req.chokepointId ? room.chokepoints[req.chokepointId] : Object.values(room.chokepoints).find((x) => x.controller === toC.id);
+      if (cp) {
+        cp.status = 'OPEN';
+        room.market.oilPriceUsd = clamp(room.market.oilPriceUsd - 14, 65, 240);
+        effectFa = `⚓ ${toC.nameFa} آبراه «${cp.nameFa}» را به روی کشتیرانی بین‌المللی بازگشایی کرد!`;
+        pushPendingReplay(room, {
+          id: uid('rep-req-cp'),
+          round: room.round,
+          from: fromC.coordinates,
+          to: cp.coordinates,
+          attackerId: toC.id,
+          attackerNameFa: toC.nameFa,
+          targetNameFa: cp.nameFa,
+          kind: 'CHOKEPOINT',
+          succeeded: true,
+          intercepted: true,
+          headlineFa: effectFa,
+          impactBadgeFa: '⚓ بازگشایی دیپلماتیک تنگه!',
+          categoryLabelFa: 'توافق راهبردی دریایی',
+        });
+      }
+      break;
+    }
+
+    case 'BLOCKADE_CHOKEPOINT': {
+      const cp = req.chokepointId ? room.chokepoints[req.chokepointId] : Object.values(room.chokepoints).find((x) => x.controller === toC.id);
+      if (cp) {
+        cp.status = 'BLOCKADED';
+        room.market.oilPriceUsd = clamp(room.market.oilPriceUsd + Math.round(cp.oilImpactFactor * 52), 65, 245);
+        room.market.globalTension = clamp(room.market.globalTension + 14, 0, 100);
+        effectFa = `🚨 به درخواست راهبردی ${fromC.nameFa}، ناوگان ${toC.nameFa} آبراه «${cp.nameFa}» را مسدود کرد!`;
+        pushPendingReplay(room, {
+          id: uid('rep-req-cpb'),
+          round: room.round,
+          from: toC.coordinates,
+          to: cp.coordinates,
+          attackerId: toC.id,
+          attackerNameFa: toC.nameFa,
+          targetNameFa: cp.nameFa,
+          kind: 'CHOKEPOINT',
+          succeeded: true,
+          intercepted: false,
+          headlineFa: effectFa,
+          impactBadgeFa: '🚨 انسداد هماهنگ تنگه!',
+          categoryLabelFa: 'عملیات مشترک انرژی',
+        });
+      }
+      break;
+    }
+
+    case 'FORM_FRIENDSHIP':
+      adjustRelation(fromC, toC, 24);
+      fromC.sanctionedBy = fromC.sanctionedBy.filter((id) => id !== toC.id);
+      toC.sanctionedBy = toC.sanctionedBy.filter((id) => id !== fromC.id);
+      if (!fromC.airspaceOpenTo.includes(toC.id)) fromC.airspaceOpenTo.push(toC.id);
+      if (!toC.airspaceOpenTo.includes(fromC.id)) toC.airspaceOpenTo.push(fromC.id);
+      if (toC.lastAttackedBy === fromC.id) toC.lastAttackedBy = null;
+      effectFa = `🤝 پیمان دوستی، عادی‌سازی روابط (+۲۴) و گشایش حریم هوایی میان ${fromC.nameFa} و ${toC.nameFa} برقرار شد!`;
+      break;
+
+    case 'JOINT_MILITARY_STRIKE':
+      if (thirdC && !thirdC.isEliminated) {
+        adjustRelation(toC, thirdC, -25);
+        const opPick: MilitaryOpType =
+          evaluateMilitaryOpDetails(toC, thirdC, 'MISSILE_DRONE_STRIKE', room.round, room.minorNations).canExecute
+            ? 'MISSILE_DRONE_STRIKE'
+            : 'AIR_SORTIE';
+        const det = evaluateMilitaryOpDetails(toC, thirdC, opPick, room.round, room.minorNations);
+        toC.orders.push({
+          id: uid('joint-mil'),
+          actor: toC.id,
+          kind: 'MILITARY_OPERATION',
+          targetCountry: thirdC.id,
+          militaryType: opPick,
+          targetSector: 'MILITARY_BASES',
+          estimatedSuccessPct: Math.max(35, det.winPct),
+          costB: 0,
+          fuelCost: 0,
+          summaryFa: `⚔️ عملیات نظامی مشترک ${toC.nameFa} علیه ${thirdC.nameFa} (با هماهنگی ${fromC.nameFa})`,
+          expectedImpactFa: 'ضربه هماهنگ ائتلافی در پایان این ماه',
+        });
+        effectFa = `⚔️ ارتش ${toC.nameFa} رسماً وارد عمل شد و دستور حمله نظامی به «${thirdC.nameFa}» را برای پایان این ماه صادر کرد!`;
+      }
+      break;
+
+    case 'JOINT_CYBER_SABOTAGE':
+      if (thirdC && !thirdC.isEliminated) {
+        const covPick: CovertOpType = thirdC.nuclearProgress >= 50 ? 'STUXNET_SABOTAGE' : 'BLACKOUT_VIRUS';
+        const det = evaluateCovertOpDetails(toC, thirdC, covPick);
+        toC.orders.push({
+          id: uid('joint-cyb'),
+          actor: toC.id,
+          kind: 'COVERT_OPERATION',
+          targetCountry: thirdC.id,
+          covertType: covPick,
+          estimatedSuccessPct: det.winPct,
+          traceRiskPct: det.tracePct,
+          costB: 0,
+          fuelCost: 0,
+          summaryFa: `💻 حمله سایبری مشترک علیه شبکه ${thirdC.nameFa}`,
+          expectedImpactFa: 'اختلال برق، رادار یا تاسیسات هسته‌ای هدف در پایان ماه',
+        });
+        effectFa = `💻 قرارگاه سایبری ${toC.nameFa} عملیات هک مشترک علیه «${thirdC.nameFa}» را در دستور این ماه قرار داد!`;
+      }
+      break;
+
+    case 'IMPOSE_SANCTION':
+      if (thirdC && !thirdC.isEliminated) {
+        if (!thirdC.sanctionedBy.includes(toC.id)) thirdC.sanctionedBy.push(toC.id);
+        toC.allies = toC.allies.filter((id) => id !== thirdC.id);
+        thirdC.allies = thirdC.allies.filter((id) => id !== toC.id);
+        adjustRelation(toC, thirdC, -20);
+        effectFa = `🚫 دولت ${toC.nameFa} رسماً تحریم‌های اقتصادی و بانکی علیه «${thirdC.nameFa}» اعمال کرد!`;
+      }
+      break;
+
+    case 'LIFT_SANCTION_ON_ME':
+      fromC.sanctionedBy = fromC.sanctionedBy.filter((id) => id !== toC.id);
+      adjustRelation(fromC, toC, 10);
+      effectFa = `✅ دولت ${toC.nameFa} تمامی تحریم‌های اقتصادی علیه ${fromC.nameFa} را لغو کرد!`;
+      break;
+
+    case 'CEASEFIRE_WITH_ME':
+      fromC.nonAggressionPacts[toC.id] = room.round + 3;
+      toC.nonAggressionPacts[fromC.id] = room.round + 3;
+      if (toC.lastAttackedBy === fromC.id) toC.lastAttackedBy = null;
+      if (fromC.lastAttackedBy === toC.id) fromC.lastAttackedBy = null;
+      toC.orders = toC.orders.filter((o) => o.targetCountry !== fromC.id);
+      fromC.orders = fromC.orders.filter((o) => o.targetCountry !== toC.id);
+      adjustRelation(fromC, toC, 16);
+      effectFa = `🕊️ آتش‌بس فوری و پیمان عدم تعرض ۳ ماهه میان ${fromC.nameFa} و ${toC.nameFa} برقرار شد!`;
+      break;
+
+    case 'ECONOMIC_AID': {
+      const aidCash = Math.min(36, Math.max(12, Math.round(toC.treasuryB * 0.16)));
+      toC.treasuryB -= aidCash;
+      fromC.treasuryB += aidCash;
+      if (toC.oilReserve >= 80) {
+        toC.oilReserve -= 25;
+        fromC.oilReserve += 25;
+      }
+      if (toC.foodReserve >= 80) {
+        toC.foodReserve -= 25;
+        fromC.foodReserve += 25;
+      }
+      effectFa = `📦 بسته حمایتی ${toC.nameFa} (+$${aidCash}B ارز + ذخایر سوخت و غلات) تحویل ${fromC.nameFa} شد!`;
+      break;
+    }
+  }
+
+  if (effectFa) {
+    addNews(room, {
+      agencyFa: 'رویترز دیپلماتیک',
+      category: 'DIPLOMACY',
+      breaking: req.kind !== 'LIFT_SANCTION_ON_ME',
+      headlineFa: effectFa,
+      bodyFa: req.summaryFa,
+      involvedCountries: thirdC ? [fromC.id, toC.id, thirdC.id] : [fromC.id, toC.id],
+    });
+  }
+
+  refreshSecretMissions(room);
+  updateRankingsAndDefcon(room);
+  return { ok: true, effectFa: effectFa || 'توافق راهبردی با موفقیت اجرا شد!' };
+}
+
+export function proposeStrategicRequest(
+  room: GameRoomState,
+  actorId: CountryId,
+  payload: {
+    targetCountry: CountryId;
+    kind: StrategicRequestKind;
+    leverage: RequestLeverageMode;
+    offeredCashB?: number;
+    thirdCountry?: CountryId;
+    chokepointId?: ChokepointId;
+  }
+): { ok: boolean; status?: 'ACCEPTED' | 'REJECTED' | 'PENDING'; messageFa?: string; errorFa?: string } {
+  if (room.isPaused) return { ok: false, errorFa: 'بازی متوقف شده است.' };
+  if (room.phase !== 'PLANNING') return { ok: false, errorFa: 'ارسال درخواست فقط در فاز برنامه‌ریزی ماه مجاز است.' };
+
+  const actor = room.countries[actorId];
+  const target = room.countries[payload.targetCountry];
+  if (!actor || !target || actor.isEliminated || target.isEliminated || actorId === target.id) {
+    return { ok: false, errorFa: 'کشور مقصد نامعتبر است.' };
+  }
+
+  const offeredCashB =
+    payload.leverage === 'DIPLOMATIC_INCENTIVE' ? clamp(Math.round(payload.offeredCashB || 0), 0, 250) : 0;
+  const thirdC = payload.thirdCountry ? room.countries[payload.thirdCountry] : null;
+
+  const evalRes = evaluateStrategicRequestChance(
+    actor,
+    target,
+    payload.kind,
+    payload.leverage,
+    offeredCashB,
+    room.chokepoints,
+    thirdC,
+    payload.chokepointId
+  );
+  if (!evalRes.canSend) {
+    return { ok: false, errorFa: evalRes.errorFa || 'امکان ارسال این درخواست وجود ندارد.' };
+  }
+
+  if (!actor.requestsSentToThisRound) actor.requestsSentToThisRound = [];
+  actor.requestsSentToThisRound.push(target.id);
+
+  if (payload.leverage === 'COERCIVE_PRESSURE') {
+    if (actor.treasuryB < 6) {
+      return { ok: false, errorFa: 'اعزام آرایش فشار نظامی مرزی $6B هزینه لجستیکی دارد.' };
+    }
+    actor.treasuryB -= 6;
+    room.market.globalTension = clamp(room.market.globalTension + 5, 0, 100);
+  }
+
+  const summaryFa = buildStrategicRequestSummaryFa(
+    room,
+    actor,
+    target,
+    payload.kind,
+    payload.thirdCountry,
+    payload.chokepointId
+  );
+
+  const req: StrategicRequest = {
+    id: uid('sreq'),
+    round: room.round,
+    from: actor.id,
+    to: target.id,
+    kind: payload.kind,
+    leverage: payload.leverage,
+    thirdCountry: payload.thirdCountry,
+    chokepointId: payload.chokepointId,
+    offeredCashB,
+    aiAcceptancePct: evalRes.acceptPct,
+    summaryFa,
+    status: 'PENDING',
+  };
+
+  // Human Target -> Deliver Interactive Request Card!
+  if (target.playerId !== null) {
+    room.strategicRequests.unshift(req);
+    if (room.strategicRequests.length > 40) room.strategicRequests.length = 40;
+    room.messages.push({
+      id: uid('req-msg'),
+      timestamp: Date.now(),
+      channel: 'DIRECT',
+      fromCountry: actor.id,
+      fromName: `${actor.nameFa} (${payload.leverage === 'COERCIVE_PRESSURE' ? '⚠️ فشار راهبردی' : '📜 درخواست رسمی'})`,
+      toCountry: target.id,
+      text: `${summaryFa}${offeredCashB > 0 ? ` — مشوق پیشنهادی: +$${offeredCashB}B` : ''}`,
+    });
+    return {
+      ok: true,
+      status: 'PENDING',
+      messageFa: `📜 درخواست رسمی «${summaryFa}» به میز فرماندهی ${target.nameFa} ارسال شد!`,
+    };
+  }
+
+  // Smart AI Evaluation
+  const accepted = evalRes.acceptPct >= 82 || Math.random() * 100 < evalRes.acceptPct;
+  if (accepted) {
+    const exec = executeAcceptedStrategicRequest(room, req);
+    if (!exec.ok) {
+      req.status = 'REJECTED';
+      req.responseReasonFa = exec.errorFa;
+      room.strategicRequests.unshift(req);
+      return { ok: false, status: 'REJECTED', errorFa: exec.errorFa };
+    }
+    req.status = 'ACCEPTED';
+    req.responseReasonFa = exec.effectFa;
+    room.strategicRequests.unshift(req);
+    return { ok: true, status: 'ACCEPTED', messageFa: exec.effectFa };
+  }
+
+  req.status = 'REJECTED';
+  if (payload.leverage === 'COERCIVE_PRESSURE') {
+    adjustRelation(actor, target, -14);
+    req.responseReasonFa = `${target.nameFa} در برابر فشار نظامی تسلیم نشد و روابط دوجانبه تیره‌تر گردید (-۱۴ رابطه).`;
+  } else {
+    req.responseReasonFa = `شورای امنیت ملی ${target.nameFa} با این درخواست مخالفت کرد (شانس پذیرش ${evalRes.acceptPct}٪ بود؛ رابطه یا مشوق مالی را تقویت کنید).`;
+  }
+  room.strategicRequests.unshift(req);
+  updateRankingsAndDefcon(room);
+  return { ok: false, status: 'REJECTED', errorFa: req.responseReasonFa };
+}
+
+export function respondStrategicRequest(
+  room: GameRoomState,
+  responderId: CountryId,
+  requestId: string,
+  accept: boolean
+): { ok: boolean; messageFa?: string; errorFa?: string } {
+  const req = room.strategicRequests.find((r) => r.id === requestId && r.status === 'PENDING');
+  if (!req || req.to !== responderId) {
+    return { ok: false, errorFa: 'درخواست معتبر یافت نشد.' };
+  }
+  const responder = room.countries[responderId];
+  const sender = room.countries[req.from];
+  if (!responder || !sender) return { ok: false, errorFa: 'کشور نامعتبر است.' };
+
+  if (!accept) {
+    req.status = 'REJECTED';
+    req.responseReasonFa = `توسط کابینه ${responder.nameFa} رد شد.`;
+    if (req.leverage === 'COERCIVE_PRESSURE') {
+      adjustRelation(sender, responder, -12);
+    }
+    updateRankingsAndDefcon(room);
+    return { ok: true, messageFa: 'درخواست رد شد.' };
+  }
+
+  const exec = executeAcceptedStrategicRequest(room, req);
+  if (!exec.ok) return { ok: false, errorFa: exec.errorFa };
+  req.status = 'ACCEPTED';
+  req.responseReasonFa = exec.effectFa;
+  return { ok: true, messageFa: exec.effectFa };
+}
+
 export function executeDiplomaticAction(
   room: GameRoomState,
   actorId: CountryId,
@@ -1134,15 +1965,16 @@ export function executeDiplomaticAction(
   }
 
   if (kind === 'IMPROVE_RELATIONS') {
-    const cost = 14;
+    const cost = 16;
     if (actor.treasuryB < cost) {
       return { ok: false, errorFa: `اعزام هیئت عالی‌رتبه دیپلماتیک $${cost}B بودجه نیاز دارد.` };
     }
     actor.treasuryB -= cost;
-    adjustRelation(actor, target, 20);
+    adjustRelation(actor, target, 18);
     if (target.relations[actor.id] >= -15 && target.lastAttackedBy === actor.id) {
       target.lastAttackedBy = null;
     }
+    refreshSecretMissions(room);
     updateRankingsAndDefcon(room);
     return {
       ok: true,
@@ -1151,139 +1983,23 @@ export function executeDiplomaticAction(
   }
 
   if (kind === 'THREATEN_ULTIMATUM') {
-    const cost = 8;
-    if (actor.treasuryB < cost) {
-      return { ok: false, errorFa: `آرایش نظامی مرزی برای صدور اولتیماتوم $${cost}B هزینه دارد.` };
-    }
-    actor.treasuryB -= cost;
-    const demand = opts?.ultimatum || 'STOP_ATTACKS';
-    const atkMil = computeCountryMilitary(actor);
-    const defMil = computeCountryMilitary(target);
-    const myDet = atkMil.attackScore + atkMil.defenseScore * 0.5 + actor.warheads * 26;
-    const targetDet = defMil.attackScore + defMil.defenseScore * 0.65 + target.warheads * 26;
-
-    room.market.globalTension = clamp(room.market.globalTension + 6, 0, 100);
-
-    if (target.playerId !== null) {
-      adjustRelation(actor, target, -12);
-      const demandFa =
-        demand === 'LIFT_SANCTION'
-          ? 'لغو فوری تحریم‌ها'
-          : demand === 'OPEN_CHOKEPOINT'
-          ? 'بازگشایی فوری تنگه دریایی'
-          : 'توقف تحرکات نظامی';
-      room.messages.push({
-        id: uid('ult'),
-        timestamp: Date.now(),
-        channel: 'DIRECT',
-        fromCountry: actor.id,
-        fromName: `${actor.nameFa} (اولتیماتوم رسمی)`,
-        toCountry: target.id,
-        text: `⚠️ اولتیماتوم رسمی نظامی: فوراً نسبت به «${demandFa}» اقدام کنید، در غیر این صورت با عملیات قاطع نظامی روبه‌رو خواهید شد!`,
-      });
-      addNews(room, {
-        agencyFa: 'رویترز فوری',
-        category: 'DIPLOMACY',
-        breaking: true,
-        headlineFa: `⚠️ اولتیماتوم رسمی ${actor.nameFa} به ${target.nameFa}: «${demandFa} یا رویارویی نظامی!»`,
-        bodyFa: 'نیروهای مسلح در مرزها به حالت آماده‌باش درآمدند.',
-        involvedCountries: [actor.id, target.id],
-      });
-      updateRankingsAndDefcon(room);
-      return { ok: true, messageFa: `⚠️ اولتیماتوم رسمی نظامی برای فرمانده ${target.nameFa} مخابره شد!` };
-    }
-
-    // AI Target evaluates deterrence!
-    if (myDet >= targetDet * 1.12) {
-      adjustRelation(actor, target, -8);
-      if (demand === 'LIFT_SANCTION') {
-        actor.sanctionedBy = actor.sanctionedBy.filter((id) => id !== target.id);
-      } else if (demand === 'OPEN_CHOKEPOINT') {
-        const cp = Object.values(room.chokepoints).find((x) => x.controller === target.id);
-        if (cp && cp.status !== 'OPEN') {
-          cp.status = 'OPEN';
-          room.market.oilPriceUsd = clamp(room.market.oilPriceUsd - 14, 65, 240);
-        }
-      } else {
-        target.orders = target.orders.filter(
-          (o) => o.targetCountry !== actor.id && !(o.targetCountry && actor.allies.includes(o.targetCountry))
-        );
-        if (target.lastAttackedBy === actor.id) target.lastAttackedBy = null;
-        target.nonAggressionPacts[actor.id] = room.round + 2;
-      }
-
-      addNews(room, {
-        agencyFa: 'آسوشیتدپرس فوری',
-        category: 'DIPLOMACY',
-        breaking: true,
-        headlineFa: `⚠️ عقب‌نشینی ${target.nameFa} در برابر اولتیماتوم نظامی سنگین ${actor.nameFa}!`,
-        bodyFa: `به دنبال نمایش قدرت ارتش ${actor.nameFa}، دولت ${target.nameFa} شروط اولتیماتوم را پذیرفت.`,
-        involvedCountries: [actor.id, target.id],
-      });
-      updateRankingsAndDefcon(room);
-      return {
-        ok: true,
-        messageFa: `💪 قدرت بازدارندگی شما کارگر افتاد! ${target.nameFa} تسلیم اولتیماتوم شد و عقب‌نشینی کرد!`,
-      };
-    }
-
-    adjustRelation(actor, target, -18);
-    updateRankingsAndDefcon(room);
-    return {
-      ok: false,
-      errorFa: `${target.nameFa} اولتیماتوم شما را رد کرد! (قدرت بازدارندگی آن‌ها در برابر تهدید مقاومت کرد و رابطه ۱۸ واحد تیره‌تر شد).`,
-    };
-  }
-
-  // SOW_DISCORD (Pit target against thirdCountry!)
-  const thirdId = opts?.thirdCountry;
-  if (!thirdId || thirdId === actorId || thirdId === targetId || !room.countries[thirdId]) {
-    return { ok: false, errorFa: 'لطفاً کشور سوم مورد نظر برای ایجاد تفرقه را انتخاب کنید.' };
-  }
-  const third = room.countries[thirdId];
-  const cost = 18;
-  if (actor.treasuryB < cost) {
-    return { ok: false, errorFa: `عملیات پرونده‌سازی و بذر نفرت اطلاعاتی $${cost}B هزینه دارد.` };
-  }
-  actor.treasuryB -= cost;
-
-  const chance = clamp(
-    50 + (actor.upgrades.INTELLIGENCE - target.upgrades.INTELLIGENCE) * 8 + (actor.intelLevel - target.intelLevel) * 4,
-    22,
-    90
-  );
-
-  if (Math.random() * 100 < chance) {
-    adjustRelation(target, third, -38);
-    if (target.relations[third.id] < 15) {
-      target.allies = target.allies.filter((id) => id !== third.id);
-      third.allies = third.allies.filter((id) => id !== target.id);
-    }
-    if (target.relations[third.id] <= -40 && target.playerId === null) {
-      target.lastAttackedBy = third.id;
-      if (!third.sanctionedBy.includes(target.id)) third.sanctionedBy.push(target.id);
-    }
-    addNews(room, {
-      agencyFa: 'الجزیره / رویترز امنیتی',
-      category: 'ESPIONAGE',
-      breaking: true,
-      headlineFa: `🐍 بحران شدید دیپلماتیک میان ${target.nameFa} و ${third.nameFa} پس از افشای اسناد محرمانه!`,
-      bodyFa: 'سطح بی‌اعتمادی میان دو کشور به شدت افزایش یافت و توافقات دوجانبه به حالت تعلیق درآمد.',
-      involvedCountries: [target.id, third.id],
+    const mappedKind: StrategicRequestKind =
+      opts?.ultimatum === 'LIFT_SANCTION'
+        ? 'LIFT_SANCTION_ON_ME'
+        : opts?.ultimatum === 'OPEN_CHOKEPOINT'
+        ? 'OPEN_CHOKEPOINT'
+        : 'CEASEFIRE_WITH_ME';
+    return proposeStrategicRequest(room, actorId, {
+      targetCountry: targetId,
+      kind: mappedKind,
+      leverage: 'COERCIVE_PRESSURE',
     });
-    updateRankingsAndDefcon(room);
-    return {
-      ok: true,
-      messageFa: `🐍 عملیات کاشتن بذر نفرت موفق شد! رابطه ${target.nameFa} و ${third.nameFa} ۳۸ واحد سقوط کرد (رابطه فعلی آن‌ها: ${target.relations[third.id]})!`,
-    };
   }
 
-  adjustRelation(actor, target, -14);
-  updateRankingsAndDefcon(room);
-  return {
-    ok: false,
-    errorFa: `ضدجاسوسی ${target.agencyCode} اسناد جعلی را تشخیص داد و عملیات تفرقه‌افکنی لو رفت!`,
-  };
+  if (!opts?.thirdCountry) {
+    return { ok: false, errorFa: 'لطفاً کشور سوم مورد نظر را انتخاب کنید.' };
+  }
+  return executeFalseFlagSabotage(room, actorId, targetId, opts.thirdCountry);
 }
 
 export function createCoalition(
@@ -1995,13 +2711,35 @@ export function prepareEndOfPlanning(room: GameRoomState): {
   }
 
   runLivingWorldAITurn(room, {
-    onChokepointNews: (ctrl, cpNameFa, nextStatus, oilPrice) => {
+    onChokepointNews: (ctrl, cpNameFa, cpCoords, nextStatus, oilPrice) => {
+      const hl =
+        nextStatus === 'BLOCKADED'
+          ? `🚨 اقدام متقابل دریایی: ${ctrl.nameFa} «${cpNameFa}» را به روی نفتکش‌ها بست! (نفت: $${oilPrice})`
+          : nextStatus === 'RESTRICTED'
+          ? `نیروی دریایی ${ctrl.nameFa} بازرسی نظامی کشتی‌ها در «${cpNameFa}» را آغاز کرد`
+          : `بازگشایی مسیر ترانزیت دریایی در «${cpNameFa}» توسط ${ctrl.nameFa}`;
+      pushPendingReplay(room, {
+        id: uid('rep-aicp'),
+        round: room.round,
+        from: ctrl.coordinates,
+        to: cpCoords,
+        attackerId: ctrl.id,
+        attackerNameFa: ctrl.nameFa,
+        targetNameFa: cpNameFa,
+        kind: 'CHOKEPOINT',
+        succeeded: true,
+        intercepted: nextStatus === 'OPEN',
+        headlineFa: hl,
+        impactBadgeFa:
+          nextStatus === 'BLOCKADED' ? '🚨 انسداد کامل آبراه!' : nextStatus === 'RESTRICTED' ? '⚠️ ایست بازرسی دریایی' : '✅ بازگشایی تنگه',
+        categoryLabelFa: 'ژئوپولیتیک تنگه‌ها و بازار نفت',
+      });
       if (nextStatus === 'BLOCKADED') {
         addNews(room, {
           agencyFa: 'بلومبرگ فوری / رویترز انرژی',
           category: 'ECONOMY',
           breaking: true,
-          headlineFa: `🚨 اقدام متقابل دریایی: ${ctrl.nameFa} «${cpNameFa}» را به روی نفتکش‌ها بست! (نفت: $${oilPrice})`,
+          headlineFa: hl,
           bodyFa: 'انسداد این آبراه استراتژیک بهای جهانی نفت و مواد غذایی را به‌شدت افزایش داد.',
           involvedCountries: [ctrl.id],
         });
@@ -2010,7 +2748,7 @@ export function prepareEndOfPlanning(room: GameRoomState): {
           agencyFa: 'رویترز دریایی',
           category: 'ECONOMY',
           breaking: false,
-          headlineFa: `نیروی دریایی ${ctrl.nameFa} بازرسی نظامی کشتی‌ها در «${cpNameFa}» را آغاز کرد`,
+          headlineFa: hl,
           bodyFa: 'نرخ حمل‌ونقل دریایی و بهای انرژی در بازارهای جهانی افزایش یافت.',
           involvedCountries: [ctrl.id],
         });
@@ -2019,7 +2757,7 @@ export function prepareEndOfPlanning(room: GameRoomState): {
           agencyFa: 'رویترز انرژی',
           category: 'ECONOMY',
           breaking: false,
-          headlineFa: `بازگشایی مسیر ترانزیت دریایی در «${cpNameFa}» توسط ${ctrl.nameFa}`,
+          headlineFa: hl,
           bodyFa: 'کشتیرانی بین‌المللی به حالت عادی بازگشت.',
           involvedCountries: [ctrl.id],
         });
@@ -2033,6 +2771,35 @@ export function prepareEndOfPlanning(room: GameRoomState): {
         headlineFa,
         bodyFa,
         involvedCountries: involved,
+      });
+    },
+    onAISpaceLaunch: (ctrl, cid, nextLv) => {
+      const spec = SPACE_CONSTELLATIONS_CATALOG[cid as SpaceConstellationId];
+      if (!spec) return;
+      const hl = `🛰️ مسابقه فضایی: ${ctrl.nameFa} «${spec.nameFa}» را به سطح ${nextLv} در مدار زمین رساند!`;
+      addNews(room, {
+        agencyFa: 'رویترز فناوری فضایی',
+        category: 'WORLD_EVENT',
+        breaking: false,
+        headlineFa: hl,
+        bodyFa: spec.perLevelBonusFa,
+        involvedCountries: [ctrl.id],
+      });
+      pushPendingReplay(room, {
+        id: uid('rep-aisat'),
+        round: room.round,
+        from: ctrl.coordinates,
+        to: [ctrl.coordinates[0] + 6, Math.min(72, ctrl.coordinates[1] + 10)],
+        attackerId: ctrl.id,
+        attackerNameFa: ctrl.nameFa,
+        defenderId: ctrl.id,
+        targetNameFa: spec.nameFa,
+        kind: 'SPACE_LAUNCH',
+        succeeded: true,
+        intercepted: false,
+        headlineFa: hl,
+        impactBadgeFa: `${spec.icon} پرتاب منظومه سطح ${nextLv}!`,
+        categoryLabelFa: 'رقابت فضایی قدرت‌های بزرگ',
       });
     },
   });
@@ -2170,7 +2937,9 @@ export function resolveCurrentRound(room: GameRoomState): void {
   const resolvedRoundNum = room.round;
   const resolvedMonthLabel = room.calendarLabelFa;
   const newVisuals: MapVisualEvent[] = [];
-  const newReplays: CinematicReplayEvent[] = [];
+  const holder = room as GameRoomState & { _queuedReplays?: CinematicReplayEvent[] };
+  const newReplays: CinematicReplayEvent[] = [...(holder._queuedReplays || [])];
+  holder._queuedReplays = [];
   const roundBattles: BattleOutcomeLog[] = [];
   const worldHighlightsFa: string[] = [];
   const seadPenalty: Partial<Record<CountryId, number>> = {};
@@ -2420,6 +3189,29 @@ export function resolveCurrentRound(room: GameRoomState): void {
 
       if (newsHeadline) {
         worldHighlightsFa.push(newsHeadline);
+        if (ord.covertType !== 'PROXY_INSURGENCY') {
+          newReplays.push({
+            id: uid('rep-cyb'),
+            round: resolvedRoundNum,
+            from: actor.coordinates,
+            to: target.coordinates,
+            attackerId: traced ? actor.id : null,
+            attackerNameFa: traced ? actor.nameFa : 'هکرهای ناشناس',
+            defenderId: target.id,
+            targetNameFa: target.nameFa,
+            kind: 'CYBER',
+            succeeded: true,
+            intercepted: false,
+            headlineFa: newsHeadline,
+            impactBadgeFa: ord.covertType.includes('ASSASSINATE')
+              ? '🎯 ترور هدفمند در پایتخت!'
+              : ord.covertType === 'BLACKOUT_VIRUS'
+              ? '⚡ خاموشی سایبری شبکه برق!'
+              : '💻 نفوذ و خرابکاری سایبری!',
+            categoryLabelFa: 'جنگ سایبری و عملیات ویژه',
+            secretActorOnly: !traced,
+          });
+        }
         addNews(room, {
           agencyFa: ord.covertType.includes('VIRUS') || ord.covertType.includes('STUXNET') ? 'بی‌بی‌سی سایبری' : 'الجزیره فوری',
           category: ord.covertType.includes('VIRUS') || ord.covertType.includes('STUXNET') ? 'CYBER' : 'ESPIONAGE',
@@ -2661,8 +3453,27 @@ export function resolveCurrentRound(room: GameRoomState): void {
 
     if ((res.status as string) === 'VETOED') {
       const vetoer = res.vetoedBy ? room.countries[res.vetoedBy] : null;
-      const hl = `🛑 وتوی قطعنامه در «${res.committeeFa}» توسط ${vetoer?.nameFa || ''}!`;
+      const reasonSuffix = res.vetoReasonFa ? ` (${res.vetoReasonFa})` : '';
+      const hl = `🛑 وتوی قطعنامه در «${res.committeeFa}» توسط ${vetoer?.nameFa || ''}${reasonSuffix}!`;
       worldHighlightsFa.push(hl);
+      if (vetoer && room.countries[res.target]) {
+        newReplays.push({
+          id: uid('rep-veto'),
+          round: resolvedRoundNum,
+          from: vetoer.coordinates,
+          to: [-74.0, 40.71], // UN HQ New York
+          attackerId: vetoer.id,
+          attackerNameFa: vetoer.nameFa,
+          defenderId: res.target,
+          targetNameFa: room.countries[res.target].nameFa,
+          kind: 'UN_DECISION',
+          succeeded: false,
+          intercepted: true,
+          headlineFa: hl,
+          impactBadgeFa: `🛑 وتوی رسمی ${vetoer.nameFa} در شورای امنیت!`,
+          categoryLabelFa: 'شورای امنیت سازمان ملل (نیویورک)',
+        });
+      }
       addNews(room, {
         agencyFa: res.committeeFa,
         category: 'DIPLOMACY',
@@ -2674,15 +3485,20 @@ export function resolveCurrentRound(room: GameRoomState): void {
     } else if (res.votesYes.length > res.votesNo.length) {
       res.status = 'PASSED';
       const targetC = room.countries[res.target];
+      const proposerC = room.countries[res.proposer];
 
       if (res.kind === 'GLOBAL_SANCTION' && targetC && !targetC.isEliminated) {
-        for (const voter of res.votesYes.slice(0, 6)) {
+        for (const voter of res.votesYes.slice(0, 8)) {
           if (voter !== targetC.id && !targetC.sanctionedBy.includes(voter)) {
             targetC.sanctionedBy.push(voter);
           }
         }
+        targetC.gdpB = Math.max(95, Math.round(targetC.gdpB * 0.96));
       } else if (res.kind === 'CONDEMN_AGGRESSION' && targetC && !targetC.isEliminated) {
-        targetC.approval = clamp(targetC.approval - 10, 0, 100);
+        targetC.approval = clamp(targetC.approval - 12, 0, 100);
+        for (const voter of res.votesYes.slice(0, 6)) {
+          if (room.countries[voter]) adjustRelation(targetC, room.countries[voter], -8);
+        }
       } else if (res.kind === 'CEASEFIRE_DEMAND') {
         room.market.globalTension = clamp(room.market.globalTension - 18, 8, 100);
       } else if (res.kind === 'OPEC_OIL_CUT') {
@@ -2694,11 +3510,29 @@ export function resolveCurrentRound(room: GameRoomState): void {
         targetC.approval = clamp(targetC.approval + 10, 0, 100);
         targetC.devastation = clamp(targetC.devastation - 18, 0, 100);
       } else if (res.kind === 'IAEA_INSPECTION' && targetC && !targetC.isEliminated) {
-        targetC.nuclearProgress = clamp(targetC.nuclearProgress - 15, 0, 100);
+        targetC.nuclearProgress = clamp(targetC.nuclearProgress - 18, 0, 100);
       }
 
-      const hl = `⚖️ تصویب در «${res.committeeFa}»: ${res.titleFa} (${res.votesYes.length} رای موافق)`;
+      const hl = `⚖️ تصویب قطعنامه در «${res.committeeFa}»: ${res.titleFa} (${res.votesYes.length} رای موافق در برابر ${res.votesNo.length})`;
       worldHighlightsFa.push(hl);
+      if (proposerC && targetC) {
+        newReplays.push({
+          id: uid('rep-unpass'),
+          round: resolvedRoundNum,
+          from: [-74.0, 40.71],
+          to: targetC.coordinates,
+          attackerId: proposerC.id,
+          attackerNameFa: proposerC.nameFa,
+          defenderId: targetC.id,
+          targetNameFa: targetC.nameFa,
+          kind: 'UN_DECISION',
+          succeeded: true,
+          intercepted: false,
+          headlineFa: hl,
+          impactBadgeFa: `⚖️ تصویب رسمی (${res.votesYes.length} رای موافق)!`,
+          categoryLabelFa: res.committeeFa,
+        });
+      }
       addNews(room, {
         agencyFa: res.committeeFa,
         category: 'DIPLOMACY',
@@ -2729,6 +3563,24 @@ export function resolveCurrentRound(room: GameRoomState): void {
     room.market.foodPriceIndex = clamp(room.market.foodPriceIndex + ev.foodDelta, 75, 230);
     room.market.globalTension = clamp(room.market.globalTension + ev.tensionDelta, 8, 100);
     worldHighlightsFa.push(`🌍 ${ev.headlineFa}`);
+    newReplays.push({
+      id: uid('rep-wev'),
+      round: resolvedRoundNum,
+      from: [8.54, 47.37], // Davos / Zurich / Global Financial Hub
+      to: [48.0, 29.0],
+      attackerId: null,
+      attackerNameFa: ev.agencyFa,
+      targetNameFa: 'بازارهای جهانی',
+      kind: 'WORLD_HEADLINE',
+      succeeded: true,
+      intercepted: ev.oilDeltaUsd < 0,
+      headlineFa: `🌍 ${ev.headlineFa}`,
+      impactBadgeFa:
+        ev.oilDeltaUsd !== 0
+          ? `🛢️ شوک بازار انرژی (${ev.oilDeltaUsd > 0 ? `+$${ev.oilDeltaUsd}` : `-$${Math.abs(ev.oilDeltaUsd)}`})`
+          : '🌐 تحول کلان بین‌المللی',
+      categoryLabelFa: ev.agencyFa,
+    });
     addNews(room, {
       agencyFa: ev.agencyFa,
       category: 'WORLD_EVENT',
@@ -2746,41 +3598,37 @@ export function resolveCurrentRound(room: GameRoomState): void {
   }
 
   // =========================================================================
-  // 6. MONTHLY ECONOMY, WATER/FOOD/GAS/POWER ECOSYSTEM & REGIME COLLAPSE
+  // 6. MONTHLY ECONOMY, PASSIVE ORBITAL RECON, RESOURCES & REGIME COLLAPSE
   // =========================================================================
-  const spot = getGlobalSpotPrices(room.market);
   for (const c of Object.values(room.countries)) {
     if (c.isEliminated) continue;
 
+    // Passive RECON_OPTICAL Satellite Constellation Benefit (v6.0 Item #10!):
+    // Automatically gathers live intelligence on top rivals/powers each month without spending covert quota!
+    const reconLv = c.constellations?.RECON_OPTICAL || 0;
+    if (reconLv > 0) {
+      const candidateTargets = ALL_COUNTRY_IDS.filter(
+        (tid) => tid !== c.id && !room.countries[tid].isEliminated
+      ).sort((a, b) => {
+        const aRival = c.rivals.includes(a) || (c.relations[a] ?? 0) < -20 ? 1 : 0;
+        const bRival = c.rivals.includes(b) || (c.relations[b] ?? 0) < -20 ? 1 : 0;
+        if (aRival !== bRival) return bRival - aRival;
+        return room.countries[b].gdpB - room.countries[a].gdpB;
+      });
+      for (const tid of candidateTargets.slice(0, reconLv)) {
+        c.knownIntel[tid] = captureSnapshot(room, room.countries[tid]);
+      }
+    }
+
     const econ = computeEconomyProjection(c, room.market, room.chokepoints, room.minorNations);
     c.treasuryB = Math.max(0, c.treasuryB + econ.netIncomeB);
-    c.oilReserve += econ.netOil;
-    c.gasReserve += econ.netGas;
-    c.foodReserve += econ.netFood;
-    c.waterReserve = (c.waterReserve || 0) + econ.netWater;
+    c.oilReserve = Math.min(550, c.oilReserve + econ.netOil);
+    c.gasReserve = Math.min(550, c.gasReserve + econ.netGas);
+    c.foodReserve = Math.min(520, c.foodReserve + econ.netFood);
+    c.waterReserve = Math.min(520, (c.waterReserve || 0) + econ.netWater);
 
-    let autoSoldCashB = 0;
-    if (c.autoSellSurplus && c.oilReserve > 240) {
-      const excessOil = c.oilReserve - 200;
-      const cash = Math.round((excessOil / 50) * spot.oilSell50B * (c.sanctionedBy.length > 0 ? 0.88 : 1));
-      c.oilReserve = 200;
-      c.treasuryB += cash;
-      autoSoldCashB += cash;
-    }
-    if (c.autoSellSurplus && c.gasReserve > 250) {
-      const excessGas = c.gasReserve - 200;
-      const cash = Math.round((excessGas / 50) * spot.gasSell50B);
-      c.gasReserve = 200;
-      c.treasuryB += cash;
-      autoSoldCashB += cash;
-    }
-    if (c.autoSellSurplus && c.foodReserve > 260) {
-      const excessFood = c.foodReserve - 210;
-      const cash = Math.round((excessFood / 50) * spot.foodSell50B);
-      c.foodReserve = 210;
-      c.treasuryB += cash;
-      autoSoldCashB += cash;
-    }
+    // Export revenue is already counted cleanly inside econ.energyExportRevenueB (No double-dip!)
+    const autoSoldCashB = Math.max(0, econ.energyExportRevenueB);
 
     if (c.oilReserve < 0) {
       const deficitCost = Math.min(c.treasuryB, Math.round(Math.abs(c.oilReserve) * 0.65));
@@ -2866,6 +3714,9 @@ export function resolveCurrentRound(room: GameRoomState): void {
     c.militaryOrdersUsedThisRound = 0;
     c.covertOrdersUsedThisRound = 0;
     c.assassinationsUsedThisRound = 0;
+    c.spotSalesUsedThisRound = 0;
+    c.missionRerollsUsedThisRound = 0;
+    c.requestsSentToThisRound = [];
     c.isReady = false;
     c.incomingAlertActive = false;
     c.incomingThreatsSummaryFa = [];
@@ -2875,7 +3726,7 @@ export function resolveCurrentRound(room: GameRoomState): void {
   }
 
   room.visualEvents = newVisuals;
-  room.lastRoundReplay = newReplays.slice(0, 14);
+  room.lastRoundReplay = newReplays.slice(0, 18);
   room.battles = [...roundBattles, ...room.battles].slice(0, 40);
   refreshSecretMissions(room);
   updateRankingsAndDefcon(room);
@@ -3072,7 +3923,18 @@ function executeRealisticMilitaryClash(
     });
 
     if (succeeded) {
-      target.orbitalSatellites = Math.max(0, (target.orbitalSatellites || 0) - 1);
+      const activeConstellations = (Object.keys(SPACE_CONSTELLATIONS_CATALOG) as SpaceConstellationId[]).filter(
+        (cid) => (target.constellations?.[cid] || 0) > 0
+      );
+      let hitConstellationFa = 'ماهواره نظامی';
+      if (activeConstellations.length > 0) {
+        const pickedCid = activeConstellations.sort(
+          (a, b) => (target.constellations[b] || 0) - (target.constellations[a] || 0)
+        )[0];
+        target.constellations[pickedCid] = Math.max(0, (target.constellations[pickedCid] || 0) - 1);
+        hitConstellationFa = SPACE_CONSTELLATIONS_CATALOG[pickedCid].nameFa;
+      }
+      target.orbitalSatellites = getTotalConstellationSatellites(target);
       target.radarIntegrity = clamp(target.radarIntegrity - 38, 12, 100);
       seadPenalty[target.id] = (seadPenalty[target.id] || 0) + 25;
       summaries[actor.id].myOperations.push({
@@ -3080,7 +3942,7 @@ function executeRealisticMilitaryClash(
         targetId: target.id,
         targetNameFa: target.nameFa,
         succeeded: true,
-        detailFa: `${hl} (-۱ ماهواره دشمن و -۳۸٪ اشراف راداری هدف)`,
+        detailFa: `انهدام ۱ واحد از «${hitConstellationFa}» در مدار ${target.nameFa} و کور شدن ۳۸٪ رادار هدف!`,
       });
       summaries[target.id].incomingAttacks.push({
         attackerId: actor.id,
@@ -3721,6 +4583,11 @@ export function sanitizeRoomForPlayer(room: GameRoomState, viewerPlayerId: strin
     return t.from === myCountryId || t.to === myCountryId;
   });
 
+  const visibleRequests = (room.strategicRequests || []).filter((r) => {
+    if (!myCountryId) return false;
+    return r.from === myCountryId || r.to === myCountryId;
+  });
+
   return {
     ...room,
     countries: maskedCountries,
@@ -3728,5 +4595,6 @@ export function sanitizeRoomForPlayer(room: GameRoomState, viewerPlayerId: strin
     lastRoundReplay: visibleReplayEvents,
     messages: visibleMessages,
     trades: visibleTrades,
+    strategicRequests: visibleRequests,
   };
 }

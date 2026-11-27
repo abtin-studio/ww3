@@ -1,4 +1,9 @@
-import { INFRASTRUCTURE_CATALOG, UPGRADE_TRACKS, WEAPONS_CATALOG } from './realWorldData.js';
+import {
+  INFRASTRUCTURE_CATALOG,
+  SPACE_CONSTELLATIONS_CATALOG,
+  UPGRADE_TRACKS,
+  WEAPONS_CATALOG,
+} from './realWorldData.js';
 import {
   ChokepointId,
   ChokepointState,
@@ -12,6 +17,9 @@ import {
   MilitaryOpType,
   MinorNationOpType,
   MinorNationState,
+  RequestLeverageMode,
+  SpaceConstellationId,
+  StrategicRequestKind,
   UpgradeTrack,
   WorldMarket,
 } from './types.js';
@@ -23,7 +31,7 @@ export interface MilitarySummary {
   missileDronePower: number;
   navalPower: number;
   groundPower: number;
-  interceptRate: number; // 8 - 93%
+  interceptRate: number; // 8 - 94%
   stealthPower: number;
   hypersonicUnits: number;
   antiBallisticUnits: number;
@@ -38,17 +46,39 @@ export interface MilitarySummary {
   veteranStars: number; // 0 - 5
 }
 
+export function getConstellationLevel(country: CountryState, id: SpaceConstellationId): number {
+  return country.constellations?.[id] || 0;
+}
+
+export function getTotalConstellationSatellites(country: CountryState): number {
+  if (!country.constellations) return country.orbitalSatellites || 0;
+  return (
+    (country.constellations.RECON_OPTICAL || 0) +
+    (country.constellations.GNSS_NAVI || 0) +
+    (country.constellations.SBIRS_SHIELD || 0) +
+    (country.constellations.SATCOM_EW || 0)
+  );
+}
+
 export function computeCountryMilitary(country: CountryState): MilitarySummary {
   let rawAttack = 0;
   let rawDefense = 0;
-  let airPower = 8 + country.upgrades.AEROSPACE * 12;
-  let missileDronePower = 10 + country.upgrades.AEROSPACE * 13;
+  const gnssLv = getConstellationLevel(country, 'GNSS_NAVI');
+  const sbirsLv = getConstellationLevel(country, 'SBIRS_SHIELD');
+  const satcomLv = getConstellationLevel(country, 'SATCOM_EW');
+  const spaceDocLv = country.upgrades.SPACE_ORBITAL || 0;
+
+  let airPower = 8 + country.upgrades.AEROSPACE * 12 + gnssLv * 10;
+  let missileDronePower = 10 + country.upgrades.AEROSPACE * 13 + gnssLv * 12 + spaceDocLv * 5;
   let navalPower = 8 + country.upgrades.NAVAL_POWER * 14;
   let groundPower = 12 + country.upgrades.ARMOR_LAND * 14;
   let interceptBonus =
     country.infrastructure.RADAR_NETWORK * 3.5 +
     country.upgrades.AIR_DEFENSE * 6 +
-    (country.orbitalSatellites || 0) * 10;
+    sbirsLv * 11 +
+    satcomLv * 5 +
+    (country.upgrades.AIR_DEFENSE >= 10 ? 12 : 0) +
+    (spaceDocLv >= 10 ? 12 : 0);
   let stealthPower = 0;
 
   let hypersonicUnits = 0;
@@ -77,7 +107,13 @@ export function computeCountryMilitary(country: CountryState): MilitarySummary {
     if (weaponId === 'fattah2' || weaponId === 'iskander_kinzhal' || weaponId === 'df21d') {
       hypersonicUnits += count;
     }
-    if (weaponId === 'thaad' || weaponId === 's400' || weaponId === 'iron_dome_arrow' || weaponId === 'bavar373' || weaponId === 'aegis_maya') {
+    if (
+      weaponId === 'thaad' ||
+      weaponId === 's400' ||
+      weaponId === 'iron_dome_arrow' ||
+      weaponId === 'bavar373' ||
+      weaponId === 'aegis_maya'
+    ) {
       antiBallisticUnits += count;
     }
     if (weaponId === 'borei_sub' || weaponId === 'astute_sub' || weaponId === 'irgc_fast_subs') {
@@ -117,6 +153,7 @@ export function computeCountryMilitary(country: CountryState): MilitarySummary {
       country.upgrades.AEROSPACE * 0.055 +
       country.upgrades.ARMOR_LAND * 0.04 +
       country.upgrades.NAVAL_POWER * 0.04 +
+      gnssLv * 0.05 +
       veteranStars * 0.05 +
       country.infrastructure.AIR_MISSILE_BASE * 0.03) *
     cmdFactor *
@@ -127,6 +164,7 @@ export function computeCountryMilitary(country: CountryState): MilitarySummary {
     (1 +
       country.upgrades.AIR_DEFENSE * 0.065 +
       country.upgrades.ARMOR_LAND * 0.05 +
+      sbirsLv * 0.045 +
       veteranStars * 0.05) *
     cmdFactor *
     fuelReadiness *
@@ -139,8 +177,18 @@ export function computeCountryMilitary(country: CountryState): MilitarySummary {
   navalPower = Math.round(navalPower * (1 + country.upgrades.NAVAL_POWER * 0.08) * fuelReadiness);
   groundPower = Math.round(groundPower * (1 + country.upgrades.ARMOR_LAND * 0.08) * fuelReadiness);
 
-  const radarFactor = Math.max(0.18, country.radarIntegrity / 100);
-  const gridRadarFactor = country.powerGrid < 40 ? 0.72 : country.powerGrid < 68 ? 0.88 : 1;
+  // SBIRS orbital shield prevents radar blindness even during cyber blackouts!
+  const minRadarFloor = sbirsLv > 0 ? 0.56 + sbirsLv * 0.1 : 0.18;
+  const radarFactor = Math.max(minRadarFloor, country.radarIntegrity / 100);
+  const gridRadarFactor =
+    sbirsLv >= 2
+      ? 0.94
+      : country.powerGrid < 40
+      ? 0.72
+      : country.powerGrid < 68
+      ? 0.88
+      : 1;
+
   let postureBonus = 0;
   if (country.alertPosture === 'MAX_INTERCEPT') postureBonus = 24;
   if (country.alertPosture === 'SCRAMBLE_FIGHTERS') postureBonus = 14 + Math.min(12, fighterCount * 2.5);
@@ -149,7 +197,7 @@ export function computeCountryMilitary(country: CountryState): MilitarySummary {
     (14 + interceptBonus * 0.66 + postureBonus + country.commanderBuff * 0.35) *
     radarFactor *
     gridRadarFactor;
-  const interceptRate = Math.min(93, Math.max(8, Math.round(rawIntercept)));
+  const interceptRate = Math.min(94, Math.max(8, Math.round(rawIntercept)));
 
   return {
     attackScore,
@@ -174,15 +222,9 @@ export function computeCountryMilitary(country: CountryState): MilitarySummary {
   };
 }
 
-/**
- * Upgradable Monthly Capacities (Items #12 & #16):
- * - Science Academy unlocks 2 (Lv.5) or 3 (Lv.11) doctrine upgrades per month!
- * - Industry unlocks more constructions per month!
- * - High Aerospace/Armor unlocks a 3rd military op slot; High Cyber/Intel unlocks a 3rd covert slot!
- */
 export function getMaxUpgradesPerRound(country: CountryState): number {
   const sci = country.infrastructure?.SCIENCE_ACADEMY || 0;
-  if (sci >= 11 && country.upgrades.INDUSTRY >= 7) return 3;
+  if (sci >= 11 && country.upgrades.INDUSTRY >= 6) return 3;
   if (sci >= 5 || country.upgrades.INDUSTRY >= 6) return 2;
   return 1;
 }
@@ -192,18 +234,28 @@ export function getMaxBuildsPerRound(country: CountryState): number {
 }
 
 export function getMaxMilitaryOrdersPerRound(country: CountryState): number {
-  return country.upgrades.AEROSPACE >= 7 || country.upgrades.ARMOR_LAND >= 7 ? 3 : 2;
+  let slots = 2;
+  if (country.upgrades.AEROSPACE >= 10 || country.upgrades.ARMOR_LAND >= 10) slots += 1;
+  else if (country.upgrades.AEROSPACE >= 7 && country.upgrades.ARMOR_LAND >= 7) slots += 1;
+  return slots;
 }
 
 export function getMaxCovertOrdersPerRound(country: CountryState): number {
-  return country.upgrades.CYBER_AI >= 8 || country.upgrades.INTELLIGENCE >= 8 ? 3 : 2;
+  return country.upgrades.CYBER_AI >= 10 || country.upgrades.INTELLIGENCE >= 10 ||
+    (country.upgrades.CYBER_AI >= 7 && country.upgrades.INTELLIGENCE >= 7)
+    ? 3
+    : 2;
+}
+
+export function getMaxSpotSalesPerRound(country: CountryState): number {
+  return (country.upgrades.ECONOMIC_SOVEREIGNTY || 0) >= 6 ? 3 : 2;
 }
 
 export function getDifficultyPlayerCostMult(difficulty: DifficultyLevel, isHuman: boolean): number {
   if (!isHuman) {
-    return difficulty === 'EXTREME' ? 0.84 : difficulty === 'HARD' ? 0.92 : 1;
+    return difficulty === 'EXTREME' ? 0.82 : difficulty === 'HARD' ? 0.9 : 1;
   }
-  return difficulty === 'EXTREME' ? 1.24 : difficulty === 'HARD' ? 1.12 : 1;
+  return difficulty === 'EXTREME' ? 1.26 : difficulty === 'HARD' ? 1.14 : 1;
 }
 
 export function getUpgradeNextCost(
@@ -214,7 +266,7 @@ export function getUpgradeNextCost(
   const spec = UPGRADE_TRACKS[track];
   const cur = country.upgrades[track] || 0;
   const diffMult = getDifficultyPlayerCostMult(difficulty, country.playerId !== null);
-  return Math.round(spec.baseCostB * (1 + Math.pow(cur, 1.24) * 0.35) * diffMult);
+  return Math.round(spec.baseCostB * (1 + Math.pow(cur, 1.26) * 0.36) * diffMult);
 }
 
 export function getInfraNextCost(
@@ -225,39 +277,113 @@ export function getInfraNextCost(
   const spec = INFRASTRUCTURE_CATALOG[type];
   const cur = country.infrastructure[type] || 0;
   const damaged = country.damagedInfra?.[type] || 0;
-  const industryDiscount = Math.min(0.34, (country.upgrades.INDUSTRY || 0) * 0.038);
+  const industryDiscount = Math.min(0.32, (country.upgrades.INDUSTRY || 0) * 0.035);
   const diffMult = getDifficultyPlayerCostMult(difficulty, country.playerId !== null);
 
   const normalCost = Math.max(
-    12,
-    Math.round(spec.costB * (1 + Math.max(0, cur - 3) * 0.19) * (1 - industryDiscount) * diffMult)
+    14,
+    Math.round(spec.costB * (1 + Math.max(0, cur - 3) * 0.21) * (1 - industryDiscount) * diffMult)
   );
 
   if (damaged > 0) {
     return {
-      costB: Math.max(8, Math.round(normalCost * 0.55)),
+      costB: Math.max(9, Math.round(normalCost * 0.56)),
       isRebuild: true,
     };
   }
   return { costB: normalCost, isRebuild: false };
 }
 
+export function getConstellationUpgradeInfo(
+  country: CountryState,
+  constellationId: SpaceConstellationId,
+  difficulty: DifficultyLevel = 'NORMAL'
+): {
+  currentLevel: number;
+  maxLevel: number;
+  costB: number;
+  fuelCost: number;
+  canUpgrade: boolean;
+  lockedReasonFa: string | null;
+} {
+  const spec = SPACE_CONSTELLATIONS_CATALOG[constellationId];
+  const cur = getConstellationLevel(country, constellationId);
+  const diffMult = getDifficultyPlayerCostMult(difficulty, country.playerId !== null);
+  if (cur >= spec.maxLevel) {
+    return {
+      currentLevel: cur,
+      maxLevel: spec.maxLevel,
+      costB: 0,
+      fuelCost: 0,
+      canUpgrade: false,
+      lockedReasonFa: 'این منظومه فضایی به حداکثر سطح مداری (سطح ۳) رسیده است.',
+    };
+  }
+  const nextLv = cur + 1;
+  const reqDoc = spec.minSpaceDoctrineByLevel[nextLv] || 0;
+  const spaceDoc = country.upgrades.SPACE_ORBITAL || 0;
+  const costB = Math.round((spec.baseCostB + cur * 18) * diffMult);
+  const fuelCost = 8 + cur * 2;
+
+  if (spaceDoc < reqDoc) {
+    return {
+      currentLevel: cur,
+      maxLevel: spec.maxLevel,
+      costB,
+      fuelCost,
+      canUpgrade: false,
+      lockedReasonFa: `برای ارتقا به سطح ${nextLv}، نیازمند دکترین «فرماندهی فضایی» سطح ${reqDoc} هستید.`,
+    };
+  }
+  if (country.oilReserve < fuelCost) {
+    return {
+      currentLevel: cur,
+      maxLevel: spec.maxLevel,
+      costB,
+      fuelCost,
+      canUpgrade: false,
+      lockedReasonFa: `نیازمند ${fuelCost} واحد سوخت پرتاب فضایی است.`,
+    };
+  }
+  if (country.treasuryB < costB) {
+    return {
+      currentLevel: cur,
+      maxLevel: spec.maxLevel,
+      costB,
+      fuelCost,
+      canUpgrade: false,
+      lockedReasonFa: `بودجه کافی ندارید ($${costB}B مورد نیاز است).`,
+    };
+  }
+  return {
+    currentLevel: cur,
+    maxLevel: spec.maxLevel,
+    costB,
+    fuelCost,
+    canUpgrade: true,
+    lockedReasonFa: null,
+  };
+}
+
 export function getSatelliteLaunchCost(
   country: CountryState,
   difficulty: DifficultyLevel = 'NORMAL'
 ): number {
-  const diffMult = getDifficultyPlayerCostMult(difficulty, country.playerId !== null);
-  const cur = country.orbitalSatellites || 0;
-  return Math.round((32 + cur * 10) * diffMult);
+  return getConstellationUpgradeInfo(country, 'RECON_OPTICAL', difficulty).costB || 38;
 }
 
 export function getEmergencyActionCost(country: CountryState, kind: EmergencyActionKind): number {
-  const scale = Math.max(0.8, Math.min(1.6, country.gdpB / 520));
-  if (kind === 'REPAIR_GRID') return Math.round(22 * scale);
-  if (kind === 'REPAIR_RADAR_CYBER') return Math.round(20 * scale);
-  return Math.round(25 * scale);
+  const scale = Math.max(0.85, Math.min(1.7, country.gdpB / 500));
+  if (kind === 'REPAIR_GRID') return Math.round(24 * scale);
+  if (kind === 'REPAIR_RADAR_CYBER') return Math.round(22 * scale);
+  return Math.round(28 * scale);
 }
 
+/**
+ * Tightened Spot Market Spread (v6.0 Item #5):
+ * Buying emergency resources is expensive; dumping surplus on spot market yields modest wholesale rates
+ * so players must negotiate bilateral contracts, manage upkeep, or build real GDP instead of farming cash!
+ */
 export function getGlobalSpotPrices(market: WorldMarket): {
   oilBuy50B: number;
   oilSell50B: number;
@@ -270,12 +396,12 @@ export function getGlobalSpotPrices(market: WorldMarket): {
   uraniumBuy20B: number;
 } {
   const oilUnit = market.oilPriceUsd / 82;
-  const buyOil = Math.max(14, Math.round(26 * oilUnit));
-  const sellOil = Math.max(11, Math.round(22 * oilUnit));
-  const buyGas = Math.max(12, Math.round(20 * (market.gasPriceIndex / 100)));
-  const sellGas = Math.max(10, Math.round(16 * (market.gasPriceIndex / 100)));
-  const buyFood = Math.max(11, Math.round(18 * (market.foodPriceIndex / 100)));
-  const sellFood = Math.max(9, Math.round(14 * (market.foodPriceIndex / 100)));
+  const buyOil = Math.max(18, Math.round(28 * oilUnit));
+  const sellOil = Math.max(8, Math.round(12 * oilUnit));
+  const buyGas = Math.max(15, Math.round(22 * (market.gasPriceIndex / 100)));
+  const sellGas = Math.max(7, Math.round(10 * (market.gasPriceIndex / 100)));
+  const buyFood = Math.max(14, Math.round(20 * (market.foodPriceIndex / 100)));
+  const sellFood = Math.max(7, Math.round(9 * (market.foodPriceIndex / 100)));
   return {
     oilBuy50B: buyOil,
     oilSell50B: sellOil,
@@ -283,9 +409,9 @@ export function getGlobalSpotPrices(market: WorldMarket): {
     gasSell50B: sellGas,
     foodBuy50B: buyFood,
     foodSell50B: sellFood,
-    waterBuy50B: 15,
-    waterSell50B: 11,
-    uraniumBuy20B: 30,
+    waterBuy50B: 17,
+    waterSell50B: 8,
+    uraniumBuy20B: 34,
   };
 }
 
@@ -294,6 +420,7 @@ export interface EconomyProjection {
   grossGdpIncomeB: number;
   empireBonusIncomeB: number;
   energyExportRevenueB: number;
+  infraUpkeepB: number;
   militaryUpkeepB: number;
   overextensionPenaltyB: number;
   sanctionPenaltyB: number;
@@ -322,15 +449,15 @@ export function computeEconomyProjection(
   for (const m of Object.values(minorNations)) {
     if (m.conqueredBy === country.id) {
       territoriesAnnexed += 1;
-      empireGdpBonus += Math.round(m.gdpB * 0.048);
+      empireGdpBonus += Math.round(m.gdpB * 0.036);
       empireOil += m.oilBonus;
       empireGas += m.gasBonus;
       empireFood += m.foodBonus;
       empireWater += m.waterBonus || 4;
     } else if (m.alignedWith === country.id) {
       protectoratesCount += 1;
-      empireGdpBonus += Math.round(m.gdpB * 0.02);
-      empireOil += Math.round(m.oilBonus * 0.25);
+      empireGdpBonus += Math.round(m.gdpB * 0.015);
+      empireOil += Math.round(m.oilBonus * 0.2);
     }
   }
 
@@ -346,16 +473,16 @@ export function computeEconomyProjection(
   }, 0);
 
   const territoryScale = Math.max(0.35, country.integrityPct / 100);
-  const devastationEconFactor = Math.max(0.35, 1 - country.devastation * 0.0065);
+  const devastationEconFactor = Math.max(0.3, 1 - country.devastation * 0.007);
 
-  // Realistic Fuel, Gas->Power, Food & Water Coupling (Item #24)
   const oilProd = Math.round((country.oilProduction + refineryBoost) * territoryScale) + empireOil;
-  const oilCons = country.oilConsumption + Math.round(weaponOilUse * 0.78);
+  const oilCons = country.oilConsumption + Math.round(weaponOilUse * 0.85);
   const netOil = oilProd - oilCons;
 
-  // Non-nuclear power plants consume natural gas to generate electricity!
   const hasCleanNuclearPower = country.upgrades.NUCLEAR >= 3 || country.infrastructure.NUCLEAR_FACILITY >= 3;
-  const powerPlantGasUse = hasCleanNuclearPower ? country.infrastructure.POWER_PLANT * 2 : country.infrastructure.POWER_PLANT * 5;
+  const powerPlantGasUse = hasCleanNuclearPower
+    ? country.infrastructure.POWER_PLANT * 2
+    : country.infrastructure.POWER_PLANT * 5;
   const gasProd = Math.round((country.gasProduction + Math.round(refineryBoost * 0.7)) * territoryScale) + empireGas;
   const netGas = gasProd - (country.gasConsumption + powerPlantGasUse);
 
@@ -365,55 +492,69 @@ export function computeEconomyProjection(
   const waterProd = Math.round(((country.waterProduction || 60) + welfareWaterBoost) * territoryScale) + empireWater;
   const netWater = waterProd - (country.waterConsumption || 50);
 
-  const gridFactor = Math.max(0.38, country.powerGrid / 100);
-  const approvalFactor = country.approval < 35 ? 0.66 : country.approval > 72 ? 1.1 : 0.96;
-  const industryTrackBonus =
-    country.upgrades.INDUSTRY * 18 +
-    (country.infrastructure.SCIENCE_ACADEMY || 0) * 6 +
-    (country.orbitalSatellites || 0) * 10;
+  const gridFactor = Math.max(0.34, country.powerGrid / 100);
+  const approvalFactor = country.approval < 35 ? 0.62 : country.approval > 75 ? 1.06 : 0.94;
+  const satcomLv = getConstellationLevel(country, 'SATCOM_EW');
+  const econSovLv = country.upgrades.ECONOMIC_SOVEREIGNTY || 0;
 
+  const doctrineIncomeBonus =
+    country.upgrades.INDUSTRY * 11 +
+    econSovLv * 10 +
+    (country.infrastructure.SCIENCE_ACADEMY || 0) * 3 +
+    satcomLv * 9;
+
+  // Tightened Realistic Macro-Economy (v6.0 Item #5: No more easy cash!)
   const grossGdpIncomeB = Math.round(
-    (country.gdpB * 0.075 * territoryScale + country.infrastructure.ARMS_FACTORY * 8 + industryTrackBonus) *
+    (country.gdpB * 0.044 * territoryScale + country.infrastructure.ARMS_FACTORY * 5 + doctrineIncomeBonus) *
       gridFactor *
       approvalFactor *
       devastationEconFactor
   );
 
   const oilPriceFactor = market.oilPriceUsd / 82;
-  let chokepointExportMultiplier = country.maritimeBlockaded ? 0.6 : 1;
+  let chokepointExportMultiplier = country.maritimeBlockaded ? 0.52 : 1;
   if (
     (country.id === 'IR' || country.id === 'SA') &&
     chokepoints.HORMUZ.status === 'BLOCKADED' &&
     chokepoints.HORMUZ.controller !== country.id
   ) {
-    chokepointExportMultiplier *= 0.35;
+    chokepointExportMultiplier *= 0.3;
   }
 
   let energyExportRevenueB = 0;
-  if (netOil > 0) {
-    energyExportRevenueB += Math.round(netOil * 0.45 * oilPriceFactor * chokepointExportMultiplier);
+  if (netOil > 0 && country.autoSellSurplus) {
+    energyExportRevenueB += Math.round(netOil * 0.22 * oilPriceFactor * chokepointExportMultiplier);
   }
-  if (netGas > 0) {
-    energyExportRevenueB += Math.round(netGas * 0.22 * (market.gasPriceIndex / 100) * chokepointExportMultiplier);
+  if (netGas > 0 && country.autoSellSurplus) {
+    energyExportRevenueB += Math.round(netGas * 0.11 * (market.gasPriceIndex / 100) * chokepointExportMultiplier);
   }
-  if (country.id === 'EG' && chokepoints.SUEZ.status === 'OPEN') energyExportRevenueB += 14;
-  if (country.id === 'TR' && chokepoints.BOSPHORUS.status === 'OPEN') energyExportRevenueB += 10;
+  if (country.id === 'EG' && chokepoints.SUEZ.status === 'OPEN') energyExportRevenueB += 10;
+  if (country.id === 'TR' && chokepoints.BOSPHORUS.status === 'OPEN') energyExportRevenueB += 8;
 
-  // Anti-Snowball Progressive Military & Imperial Overextension Upkeep (Item #20!)
+  // National Infrastructure Maintenance Cost (prevents infinite free snowballs)
+  const totalInfraCount = Object.values(country.infrastructure).reduce((s, v) => s + (v || 0), 0);
+  const infraDiscount = country.upgrades.INDUSTRY >= 10 ? 0.7 : 1;
+  const infraUpkeepB = Math.round(Math.max(0, totalInfraCount - 14) * 1.45 * infraDiscount);
+
+  // Realistic Progressive Military Maintenance
   const baseUnitsUpkeep = Object.entries(country.weapons).reduce((acc, [wId, qty]) => {
     const spec = WEAPONS_CATALOG[wId];
-    return acc + (spec ? spec.unitCostB * 0.072 * qty : 0);
-  }, 5);
-  const largeArmySurcharge = totalUnits > 28 ? Math.pow(totalUnits - 28, 1.35) * 2.2 : 0;
+    return acc + (spec ? spec.unitCostB * 0.095 * qty : 0);
+  }, 6);
+  const largeArmySurcharge = totalUnits > 22 ? Math.pow(totalUnits - 22, 1.38) * 2.6 : 0;
   const militaryUpkeepB = Math.round(baseUnitsUpkeep + largeArmySurcharge);
 
   const overextensionPenaltyB =
-    (territoriesAnnexed > 3 ? (territoriesAnnexed - 3) * 14 : 0) +
-    (country.treasuryB > 800 ? Math.round((country.treasuryB - 800) * 0.045) : 0);
+    (territoriesAnnexed > 2 ? (territoriesAnnexed - 2) * 16 : 0) +
+    (country.treasuryB > 550 ? Math.round((country.treasuryB - 550) * 0.06) : 0);
 
   const rawSanctionCount = country.sanctionedBy.length;
-  const selfReliance = Math.min(0.72, country.allies.length * 0.14 + (country.upgrades.INDUSTRY >= 7 ? 0.22 : 0));
-  const sanctionRate = Math.min(0.42, rawSanctionCount * 0.085 * (1 - selfReliance));
+  const econSovShield = Math.min(0.85, econSovLv * 0.09);
+  const selfReliance = Math.min(
+    0.88,
+    econSovShield + country.allies.length * 0.09 + (country.upgrades.INDUSTRY >= 7 ? 0.14 : 0)
+  );
+  const sanctionRate = Math.min(0.48, rawSanctionCount * 0.1 * (1 - selfReliance));
   const sanctionPenaltyB = Math.round(
     (grossGdpIncomeB + empireGdpBonus + Math.max(0, energyExportRevenueB)) * sanctionRate
   );
@@ -422,6 +563,7 @@ export function computeEconomyProjection(
     grossGdpIncomeB +
     empireGdpBonus +
     energyExportRevenueB -
+    infraUpkeepB -
     militaryUpkeepB -
     overextensionPenaltyB -
     sanctionPenaltyB;
@@ -431,6 +573,7 @@ export function computeEconomyProjection(
     grossGdpIncomeB,
     empireBonusIncomeB: empireGdpBonus,
     energyExportRevenueB,
+    infraUpkeepB,
     militaryUpkeepB,
     overextensionPenaltyB,
     sanctionPenaltyB,
@@ -464,7 +607,6 @@ export function canReachByLandOrSea(
   if (directDist <= 29) {
     return { reachable: true, isCloseBorder: true, viaSeaOrBase: false };
   }
-  // Check allied/annexed forward base proximity!
   for (const m of Object.values(minorNations)) {
     if (m.conqueredBy === attacker.id || m.alignedWith === attacker.id) {
       const d = Math.hypot(m.coordinates[0] - targetCoords[0], m.coordinates[1] - targetCoords[1]);
@@ -491,8 +633,15 @@ export function evaluateMilitaryOpDetails(
   const def = computeCountryMilitary(defender);
   const factorsFa: string[] = [];
 
+  const gnssLv = getConstellationLevel(attacker, 'GNSS_NAVI');
+  const reconSatLv = getConstellationLevel(attacker, 'RECON_OPTICAL');
+  const defSbirsLv = getConstellationLevel(defender, 'SBIRS_SHIELD');
+  const defSatcomLv = getConstellationLevel(defender, 'SATCOM_EW');
+  const fuelDiscountMult = Math.max(0.7, 1 - gnssLv * 0.1);
+  const calcFuel = (base: number) => Math.max(2, Math.round(base * fuelDiscountMult));
+
   if (opType === 'LIBERATION_COUNTEROFFENSIVE') {
-    const fuelCost = 12;
+    const fuelCost = calcFuel(12);
     const canExec = atk.armorCount + atk.fighterCount >= 1 && attacker.oilReserve >= fuelCost;
     const ratio = (atk.groundPower + atk.airPower * 0.5) / Math.max(40, def.groundPower * 0.75);
     factorsFa.push('+۱۸٪ انگیزه مقاومت ملی در خاک میهن');
@@ -500,7 +649,7 @@ export function evaluateMilitaryOpDetails(
       winPct: Math.min(92, Math.max(25, Math.round(ratio * 48 + 18))),
       tracePct: 100,
       canExecute: canExec,
-      requirementErrorFa: !canExec ? 'نیازمند حداقل ۱ لشکر زرهی/جنگنده و ۱۲ واحد سوخت نفت است.' : null,
+      requirementErrorFa: !canExec ? `نیازمند حداقل ۱ لشکر زرهی/جنگنده و ${fuelCost} واحد سوخت نفت است.` : null,
       fuelCost,
       factorsFa,
     };
@@ -508,13 +657,13 @@ export function evaluateMilitaryOpDetails(
 
   const intel = attacker.knownIntel[defender.id];
   const intelAge = intel ? Math.max(0, currentRound - intel.round) : 99;
-  const satBonus = (attacker.orbitalSatellites || 0) * 6;
-  const reconBonus = (intelAge <= 2 ? 14 : intelAge <= 5 ? 7 : 0) + satBonus;
-  if (reconBonus > 0) factorsFa.push(`+${reconBonus}٪ اشراف ماهواره‌ای و مداری`);
+  const satBonus = reconSatLv * 7 + gnssLv * 6;
+  const reconBonus = (intelAge <= 2 ? 12 : intelAge <= 5 ? 6 : 0) + satBonus;
+  if (reconBonus > 0) factorsFa.push(`+${reconBonus}٪ اشراف اپتیکال و ناوبری مداری`);
 
   if (opType === 'ASAT_STRIKE') {
-    const fuelCost = 8;
-    const targetSats = defender.orbitalSatellites || 0;
+    const fuelCost = calcFuel(8);
+    const targetSats = getTotalConstellationSatellites(defender);
     if (targetSats <= 0) {
       return {
         winPct: 0,
@@ -525,25 +674,26 @@ export function evaluateMilitaryOpDetails(
         factorsFa: ['بدون هدف مداری'],
       };
     }
-    if (attacker.upgrades.AEROSPACE < 3 && atk.missileCount < 2) {
+    if (attacker.upgrades.SPACE_ORBITAL < 2 && attacker.upgrades.AEROSPACE < 3 && atk.missileCount < 2) {
       return {
         winPct: 0,
         tracePct: 100,
         canExecute: false,
-        requirementErrorFa: 'نیازمند دکترین هوافضای سطح ۳ (یا حداقل ۲ تیپ موشکی) است!',
+        requirementErrorFa: 'نیازمند دکترین فرماندهی فضایی سطح ۲ یا هوافضای سطح ۳ است!',
         fuelCost,
         factorsFa: ['فاقد موشک ضدماهواره'],
       };
     }
     const raw =
-      52 +
-      attacker.upgrades.AEROSPACE * 5 +
-      (attacker.orbitalSatellites || 0) * 6 -
-      defender.upgrades.CYBER_AI * 3 -
-      defender.upgrades.AIR_DEFENSE * 2;
-    factorsFa.push(`+${attacker.upgrades.AEROSPACE * 5}٪ توان موشکی مداری`);
+      48 +
+      (attacker.upgrades.SPACE_ORBITAL || 0) * 6 +
+      attacker.upgrades.AEROSPACE * 3.5 +
+      reconSatLv * 5 -
+      (defender.upgrades.SPACE_ORBITAL || 0) * 4 -
+      defender.upgrades.CYBER_AI * 2.5;
+    factorsFa.push(`+${(attacker.upgrades.SPACE_ORBITAL || 0) * 6}٪ توان جنگ مداری`);
     return {
-      winPct: Math.min(92, Math.max(22, Math.round(raw))),
+      winPct: Math.min(91, Math.max(20, Math.round(raw))),
       tracePct: 100,
       canExecute: attacker.oilReserve >= fuelCost,
       requirementErrorFa: attacker.oilReserve < fuelCost ? 'کمبود سوخت پرتاب مداری!' : null,
@@ -557,11 +707,11 @@ export function evaluateMilitaryOpDetails(
       o.targetCountry === defender.id &&
       (o.militaryType === 'AIR_SORTIE' || o.covertType === 'BLACKOUT_VIRUS')
   );
-  const comboBonus = seadOrAirQueued && opType !== 'AIR_SORTIE' ? 18 : 0;
+  const comboBonus = seadOrAirQueued && opType !== 'AIR_SORTIE' ? 16 : 0;
   if (comboBonus > 0) factorsFa.push(`+${comboBonus}٪ ترکیب با سرکوب رادار`);
 
   if (opType === 'AIR_SORTIE') {
-    const fuelCost = 12;
+    const fuelCost = calcFuel(12);
     if (atk.fighterCount < 1) {
       return {
         winPct: 0,
@@ -580,7 +730,8 @@ export function evaluateMilitaryOpDetails(
       46 +
       Math.min(28, atk.fighterCount * 5) +
       stealthBypass +
-      attacker.upgrades.AEROSPACE * 3.5 -
+      attacker.upgrades.AEROSPACE * 3.5 +
+      (attacker.upgrades.AEROSPACE >= 6 ? 8 : 0) -
       def.interceptRate * 0.48 +
       reconBonus;
     return {
@@ -594,7 +745,7 @@ export function evaluateMilitaryOpDetails(
   }
 
   if (opType === 'MISSILE_DRONE_STRIKE') {
-    const fuelCost = 6;
+    const fuelCost = calcFuel(6);
     if (atk.missileCount + atk.droneCount < 1) {
       return {
         winPct: 0,
@@ -607,13 +758,13 @@ export function evaluateMilitaryOpDetails(
     }
     const hyperBonus = Math.min(24, atk.hypersonicUnits * 8);
     if (hyperBonus > 0) factorsFa.push(`+${hyperBonus}٪ عبور موشک‌های هایپرسونیک از پدافند`);
-    const droneSwarmBonus = Math.min(18, atk.droneCount * 3.5);
+    const droneSwarmBonus = Math.max(0, Math.min(18, atk.droneCount * 3.5) - defSatcomLv * 4);
     if (droneSwarmBonus > 0) factorsFa.push(`+${Math.round(droneSwarmBonus)}٪ اشباع پهپادی`);
-    const abmPenalty = Math.min(18, def.antiBallisticUnits * 3.5);
-    if (abmPenalty > 0) factorsFa.push(`-${Math.round(abmPenalty)}٪ سپر ضدبالستیک هدف`);
+    const abmPenalty = Math.min(24, def.antiBallisticUnits * 3.5 + defSbirsLv * 5);
+    if (abmPenalty > 0) factorsFa.push(`-${Math.round(abmPenalty)}٪ سپر ضدبالستیک و هشدار مداری هدف`);
 
     const raw =
-      52 +
+      50 +
       hyperBonus +
       droneSwarmBonus +
       atk.missileCount * 2.5 -
@@ -622,7 +773,7 @@ export function evaluateMilitaryOpDetails(
       reconBonus +
       comboBonus;
     return {
-      winPct: Math.min(93, Math.max(16, Math.round(raw))),
+      winPct: Math.min(93, Math.max(15, Math.round(raw))),
       tracePct: 100,
       canExecute: attacker.oilReserve >= fuelCost,
       requirementErrorFa: attacker.oilReserve < fuelCost ? 'کمبود سوخت موشکی/پهپادی!' : null,
@@ -632,7 +783,7 @@ export function evaluateMilitaryOpDetails(
   }
 
   if (opType === 'NAVAL_BLOCKADE_STRIKE') {
-    const fuelCost = 14;
+    const fuelCost = calcFuel(14);
     if (atk.navalCount < 1) {
       return {
         winPct: 0,
@@ -659,7 +810,7 @@ export function evaluateMilitaryOpDetails(
   }
 
   if (opType === 'GROUND_CONQUEST') {
-    const fuelCost = 18;
+    const fuelCost = calcFuel(18);
     if (atk.armorCount < 1) {
       return {
         winPct: 0,
@@ -706,12 +857,20 @@ export function evaluateMilitaryOpDetails(
   }
 
   // NUCLEAR_STRIKE
-  const fuelCost = 10;
+  const fuelCost = calcFuel(10);
   const canNuke = attacker.warheads > 0;
-  factorsFa.push(`-${Math.round(def.interceptRate * 0.35 + def.antiBallisticUnits * 3)}٪ سپر ضدبالستیک فضایی`);
-  const raw = 84 - def.interceptRate * 0.35 - def.antiBallisticUnits * 3 + attacker.upgrades.AEROSPACE * 2.5 + comboBonus * 0.5;
+  const sbirsIntercept = defSbirsLv * 6;
+  factorsFa.push(`-${Math.round(def.interceptRate * 0.35 + def.antiBallisticUnits * 3 + sbirsIntercept)}٪ سپر ضدبالستیک و SBIRS`);
+  const raw =
+    84 -
+    def.interceptRate * 0.35 -
+    def.antiBallisticUnits * 3 -
+    sbirsIntercept +
+    attacker.upgrades.AEROSPACE * 2.5 +
+    (attacker.upgrades.NUCLEAR >= 9 ? 10 : 0) +
+    comboBonus * 0.5;
   return {
-    winPct: Math.min(95, Math.max(28, Math.round(raw))),
+    winPct: Math.min(95, Math.max(24, Math.round(raw))),
     tracePct: 100,
     canExecute: canNuke,
     requirementErrorFa: !canNuke ? 'فاقد کلاهک هسته‌ای عملیاتی (نیازمند دکترین هسته‌ای سطح ۵)' : null,
@@ -741,6 +900,10 @@ export function evaluateCovertOpDetails(
   const gridWeakness = defender.powerGrid < 55 ? 9 : 0;
   if (gridWeakness > 0) factorsFa.push(`+${gridWeakness}٪ ضعف شبکه برق هدف`);
 
+  const reconSatLv = getConstellationLevel(attacker, 'RECON_OPTICAL');
+  const atkSatcomLv = getConstellationLevel(attacker, 'SATCOM_EW');
+  const defSatcomLv = getConstellationLevel(defender, 'SATCOM_EW');
+
   const isCyber =
     covertType === 'BLACKOUT_VIRUS' ||
     covertType === 'TREASURY_HEIST' ||
@@ -750,13 +913,17 @@ export function evaluateCovertOpDetails(
     const raw =
       66 +
       attacker.upgrades.INTELLIGENCE * 4.5 +
-      attacker.upgrades.AEROSPACE * 2.5 -
+      reconSatLv * 8 +
+      (attacker.upgrades.SPACE_ORBITAL || 0) * 3 -
       defender.upgrades.AIR_DEFENSE * 2.2 -
       alertPenalty * 0.4;
-    const tracePct = Math.min(45, Math.max(5, Math.round(12 + defender.upgrades.CYBER_AI * 3 - attacker.upgrades.INTELLIGENCE * 2)));
-    factorsFa.push(`+${attacker.upgrades.INTELLIGENCE * 4}٪ توان اشراف ماهواره‌ای`);
+    const tracePct = Math.min(
+      45,
+      Math.max(5, Math.round(12 + defender.upgrades.CYBER_AI * 3 - attacker.upgrades.INTELLIGENCE * 2))
+    );
+    factorsFa.push(`+${attacker.upgrades.INTELLIGENCE * 4 + reconSatLv * 8}٪ اشراف اطلاعاتی و اپتیکال`);
     return {
-      winPct: Math.min(95, Math.max(35, Math.round(raw))),
+      winPct: Math.min(96, Math.max(35, Math.round(raw))),
       tracePct,
       canExecute: true,
       requirementErrorFa: null,
@@ -769,13 +936,15 @@ export function evaluateCovertOpDetails(
     const myCyber =
       attacker.cyberShield * 0.5 +
       attacker.upgrades.CYBER_AI * 8.5 +
-      attacker.infrastructure.CYBER_HQ * 3;
+      attacker.infrastructure.CYBER_HQ * 3 +
+      atkSatcomLv * 6;
     const defCyber =
       defender.cyberShield * 0.5 +
       defender.upgrades.CYBER_AI * 7.5 +
-      defender.infrastructure.CYBER_HQ * 2.8;
+      defender.infrastructure.CYBER_HQ * 2.8 +
+      defSatcomLv * 6;
     const diff = Math.round((myCyber - defCyber) * 0.85);
-    factorsFa.push(`${diff >= 0 ? `+${diff}` : diff}٪ توازن قدرت سایبری`);
+    factorsFa.push(`${diff >= 0 ? `+${diff}` : diff}٪ توازن قدرت سایبری و مداری`);
 
     const difficultyMod = covertType === 'STUXNET_SABOTAGE' ? -6 : 0;
     const winPct = Math.min(
@@ -791,7 +960,7 @@ export function evaluateCovertOpDetails(
     return { winPct, tracePct, canExecute: true, requirementErrorFa: null, fuelCost: 0, factorsFa };
   }
 
-  const mySpy = attacker.intelLevel * 4.5 + attacker.upgrades.INTELLIGENCE * 8.5;
+  const mySpy = attacker.intelLevel * 4.5 + attacker.upgrades.INTELLIGENCE * 8.5 + reconSatLv * 5;
   const defSpy =
     defender.intelLevel * 4.5 +
     defender.upgrades.INTELLIGENCE * 7.8 +
@@ -833,6 +1002,265 @@ export function estimateCovertSuccessPct(
   return evaluateCovertOpDetails(attacker, defender, covertType).winPct;
 }
 
+/**
+ * Renamed & Balanced False-Flag Diplomatic Sabotage (v6.0 Item #3):
+ * "عملیات فریب و بحران‌سازی دیپلماتیک (پرچم دروغین)"
+ * - Costs $32B + 1 covert operation quota + pair cooldown of 3 rounds
+ * - Scales realistically against existing trust between Target & Third Country
+ */
+export function evaluateFalseFlagSabotageChance(
+  actor: CountryState,
+  target: CountryState,
+  third: CountryState,
+  currentRound: number
+): {
+  winPct: number;
+  exposureRiskPct: number;
+  costB: number;
+  currentPairRel: number;
+  expectedRelDrop: number;
+  canExecute: boolean;
+  errorFa: string | null;
+  factorsFa: string[];
+} {
+  const costB = 32;
+  const currentPairRel = target.relations[third.id] ?? 0;
+  const pairKey = [target.id, third.id].sort().join('-');
+  const cooldownUntil = actor.sabotageCooldowns?.[pairKey] || 0;
+  const maxCovert = getMaxCovertOrdersPerRound(actor);
+
+  const factorsFa: string[] = [];
+  const myIntel = actor.intelLevel * 4 + actor.upgrades.INTELLIGENCE * 8 + actor.upgrades.CYBER_AI * 3;
+  const pairCounterIntel =
+    Math.max(target.intelLevel, third.intelLevel) * 3.8 +
+    Math.max(target.upgrades.INTELLIGENCE, third.upgrades.INTELLIGENCE) * 7.2;
+
+  const intelEdge = Math.round((myIntel - pairCounterIntel) * 0.75);
+  factorsFa.push(`${intelEdge >= 0 ? `+${intelEdge}` : intelEdge}٪ برتری سرویس اطلاعاتی بر ضدجاسوسی دو کشور`);
+
+  // Historic allies (+75) are much harder to fool than suspicious neutrals (+10)
+  const trustResistance =
+    target.allies.includes(third.id)
+      ? 24
+      : currentPairRel >= 60
+      ? 16
+      : currentPairRel >= 25
+      ? 8
+      : currentPairRel <= -25
+      ? -10
+      : 0;
+  if (trustResistance > 0) {
+    factorsFa.push(`-${trustResistance}٪ اعتماد عمیق و کانال امنیتی مشترک بین دو کشور`);
+  } else if (trustResistance < 0) {
+    factorsFa.push(`+${Math.abs(trustResistance)}٪ بی‌اعتمادی و تنش قبلی بین دو کشور`);
+  }
+
+  const winPct = Math.min(82, Math.max(14, Math.round(46 + intelEdge - trustResistance)));
+  const exposureRiskPct = Math.min(
+    84,
+    Math.max(12, Math.round(36 + (pairCounterIntel - myIntel) * 0.65 + (target.allies.includes(third.id) ? 12 : 0)))
+  );
+  const expectedRelDrop = target.allies.includes(third.id) ? 26 : 34;
+
+  let errorFa: string | null = null;
+  if (target.id === third.id || target.id === actor.id || third.id === actor.id) {
+    errorFa = 'دو کشور متمایز خارج از کشور خود انتخاب کنید.';
+  } else if (actor.upgrades.INTELLIGENCE < 2) {
+    errorFa = 'نیازمند دکترین «سازمان اطلاعات» حداقل سطح ۲ است.';
+  } else if (actor.covertOrdersUsedThisRound >= maxCovert) {
+    errorFa = `سهمیه عملیات مخفی این ماه شما (${maxCovert}/${maxCovert}) تکمیل شده است.`;
+  } else if (cooldownUntil > currentRound) {
+    errorFa = `سرویس‌های امنیتی این دو کشور هوشیارند (قابل تکرار از ماه ${cooldownUntil}).`;
+  } else if (currentPairRel <= -85 && !target.allies.includes(third.id)) {
+    errorFa = 'روابط این دو کشور هم‌اکنون در اوج خصومت کامل است!';
+  } else if (actor.treasuryB < costB) {
+    errorFa = `نیازمند $${costB}B بودجه مخفی عملیات است.`;
+  }
+
+  return {
+    winPct,
+    exposureRiskPct,
+    costB,
+    currentPairRel,
+    expectedRelDrop,
+    canExecute: errorFa === null,
+    errorFa,
+    factorsFa,
+  };
+}
+
+/**
+ * Smart Comprehensive Strategic Requests Evaluator (v6.0 Item #4):
+ * Never trivial! Weighs bilateral relations, 3rd-country rivalry/alliance, military deterrence,
+ * chokepoint ownership, offered financial incentive, and 1-request-per-target monthly cap.
+ */
+export function evaluateStrategicRequestChance(
+  actor: CountryState,
+  target: CountryState,
+  kind: StrategicRequestKind,
+  leverage: RequestLeverageMode,
+  offeredCashB: number,
+  chokepoints: Record<ChokepointId, ChokepointState>,
+  thirdCountry?: CountryState | null,
+  chokepointId?: ChokepointId
+): {
+  acceptPct: number;
+  canSend: boolean;
+  errorFa: string | null;
+  factorsFa: string[];
+} {
+  const factorsFa: string[] = [];
+  const rel = target.relations[actor.id] ?? 0;
+  const actorMil = computeCountryMilitary(actor);
+  const targetMil = computeCountryMilitary(target);
+  const powerRatio = (actorMil.attackScore + actor.warheads * 25) / Math.max(40, targetMil.defenseScore + target.warheads * 22);
+
+  if ((actor.requestsSentToThisRound || []).includes(target.id)) {
+    return {
+      acceptPct: 0,
+      canSend: false,
+      errorFa: `در این ماه قبلاً یک درخواست رسمی برای ${target.nameFa} ارسال کرده‌اید.`,
+      factorsFa: [],
+    };
+  }
+  if (offeredCashB > 0 && actor.treasuryB < offeredCashB) {
+    return {
+      acceptPct: 0,
+      canSend: false,
+      errorFa: `خزانه شما برای پرداخت مشوق $${offeredCashB}B کافی نیست.`,
+      factorsFa: [],
+    };
+  }
+
+  let score = 26;
+
+  if (leverage === 'DIPLOMATIC_INCENTIVE') {
+    const relMod = Math.round(rel * 0.42);
+    score += relMod;
+    factorsFa.push(`${relMod >= 0 ? `+${relMod}` : relMod}٪ سطح روابط دیپلماتیک فعلی (${rel})`);
+    if (target.allies.includes(actor.id) || target.secretAllies.includes(actor.id)) {
+      score += 18;
+      factorsFa.push('+۱۸٪ تعهد هم‌پیمانی راهبردی');
+    }
+    const cashBonus = Math.min(34, Math.round(offeredCashB * 0.42));
+    if (cashBonus > 0) {
+      score += cashBonus;
+      factorsFa.push(`+${cashBonus}٪ بسته مشوق مالی ($${offeredCashB}B)`);
+    }
+  } else {
+    // COERCIVE_PRESSURE
+    const detBonus = Math.min(44, Math.max(-28, Math.round((powerRatio - 1.05) * 34)));
+    score += detBonus;
+    factorsFa.push(`${detBonus >= 0 ? `+${detBonus}` : detBonus}٪ نسبت بازدارندگی نظامی (${powerRatio.toFixed(1)}x)`);
+    if (target.isUNVetoMember || target.aiPersonality === 'SUPERPOWER') {
+      score -= 22;
+      factorsFa.push('-۲۲٪ مقاومت ابرقدرت‌ها در برابر تهدید و اولتیماتوم');
+    }
+    if (target.devastation >= 35) {
+      score += 14;
+      factorsFa.push('+۱۴٪ فرسودگی و فشار بحران داخلی هدف');
+    }
+  }
+
+  // Specific Request Feasibility & Geopolitical Logic
+  if (kind === 'OPEN_CHOKEPOINT' || kind === 'BLOCKADE_CHOKEPOINT') {
+    const cp = chokepointId ? chokepoints[chokepointId] : undefined;
+    if (!cp || cp.controller !== target.id) {
+      return {
+        acceptPct: 0,
+        canSend: false,
+        errorFa: `${target.nameFa} کنترل‌کننده مستقیم این تنگه نیست!`,
+        factorsFa: [],
+      };
+    }
+    if (kind === 'BLOCKADE_CHOKEPOINT') {
+      score -= 18;
+      factorsFa.push('-۱۸٪ هزینه سنگین بستن آبراه بین‌المللی برای کشور کنترل‌کننده');
+    } else if (cp.status === 'OPEN') {
+      return {
+        acceptPct: 0,
+        canSend: false,
+        errorFa: `${cp.nameFa} هم‌اکنون کاملاً باز است!`,
+        factorsFa: [],
+      };
+    }
+  }
+
+  if (kind === 'JOINT_MILITARY_STRIKE' || kind === 'JOINT_CYBER_SABOTAGE' || kind === 'IMPOSE_SANCTION') {
+    if (!thirdCountry || thirdCountry.id === actor.id || thirdCountry.id === target.id) {
+      return {
+        acceptPct: 0,
+        canSend: false,
+        errorFa: 'کشور سوم هدف را به درستی انتخاب کنید.',
+        factorsFa: [],
+      };
+    }
+    const targetToThirdRel = target.relations[thirdCountry.id] ?? 0;
+    if (target.allies.includes(thirdCountry.id) || target.secretAllies.includes(thirdCountry.id)) {
+      score -= 55;
+      factorsFa.push(`-۵۵٪ ${thirdCountry.nameFa} متحد رسمی ${target.nameFa} است!`);
+    } else if (targetToThirdRel <= -35 || target.rivals.includes(thirdCountry.id)) {
+      score += 24;
+      factorsFa.push(`+۲۴٪ دشمنی مشترک ${target.nameFa} با ${thirdCountry.nameFa}`);
+    } else if (targetToThirdRel >= 25) {
+      score -= 24;
+      factorsFa.push(`-۲۴٪ روابط حسنه ${target.nameFa} با ${thirdCountry.nameFa}`);
+    }
+    if (kind === 'JOINT_MILITARY_STRIKE') {
+      score -= 18;
+      factorsFa.push('-۱۸٪ ریسک ورود مستقیم به جنگ نظامی');
+    } else if (kind === 'JOINT_CYBER_SABOTAGE') {
+      score -= 8;
+      factorsFa.push('-۸٪ حساسیت عملیات سایبری مشترک');
+    }
+  }
+
+  if (kind === 'LIFT_SANCTION_ON_ME') {
+    if (!actor.sanctionedBy.includes(target.id)) {
+      return {
+        acceptPct: 0,
+        canSend: false,
+        errorFa: `${target.nameFa} تحریمی علیه کشور شما اعمال نکرده است.`,
+        factorsFa: [],
+      };
+    }
+    score -= 10;
+  }
+
+  if (kind === 'ECONOMIC_AID') {
+    if (target.treasuryB < 110) {
+      score -= 35;
+      factorsFa.push('-۳۵٪ محدودیت بودجه خزانه کشور مقابل');
+    } else {
+      score -= 14;
+    }
+    if (leverage === 'COERCIVE_PRESSURE') {
+      score -= 10;
+      factorsFa.push('-۱۰٪ مقاومت در برابر باج‌گیری مالی');
+    }
+  }
+
+  if (kind === 'FORM_FRIENDSHIP') {
+    if (target.allies.includes(actor.id)) {
+      return {
+        acceptPct: 0,
+        canSend: false,
+        errorFa: `شما هم‌اکنون متحد رسمی ${target.nameFa} هستید.`,
+        factorsFa: [],
+      };
+    }
+    if (leverage === 'COERCIVE_PRESSURE') {
+      score -= 30;
+      factorsFa.push('-۳۰٪ دوستی با تهدید نظامی شکل نمی‌گیرد!');
+    } else {
+      score += 10;
+    }
+  }
+
+  const acceptPct = Math.min(93, Math.max(4, Math.round(score)));
+  return { acceptPct, canSend: true, errorFa: null, factorsFa };
+}
+
 export function evaluateMinorOpDetails(
   attacker: CountryState,
   minor: MinorNationState,
@@ -870,13 +1298,17 @@ export function evaluateMinorOpDetails(
     }
     const ratio = (mil.groundPower + mil.airPower * 0.45 + mil.navalPower * 0.2) / Math.max(50, effectiveGarrison);
     const winPct = Math.min(91, Math.max(14, Math.round(ratio * 44 + (reach.isCloseBorder ? 8 : -5))));
-    // Realistic multi-stage occupation: strong countries take 2-3 campaigns; smaller ones ~55% per offensive!
+    const armorBoost = attacker.upgrades.ARMOR_LAND >= 6 ? 12 : 0;
     const expectedProgressPct =
-      minor.garrisonPower >= 165 ? 38 : minor.garrisonPower >= 120 ? 50 : 60;
-    return { winPct, canExecute: attacker.oilReserve >= 12, errorFa: attacker.oilReserve < 12 ? 'کمبود ۱۲ واحد سوخت نفت!' : null, expectedProgressPct };
+      (minor.garrisonPower >= 165 ? 38 : minor.garrisonPower >= 120 ? 50 : 60) + armorBoost;
+    return {
+      winPct,
+      canExecute: attacker.oilReserve >= 12,
+      errorFa: attacker.oilReserve < 12 ? 'کمبود ۱۲ واحد سوخت نفت!' : null,
+      expectedProgressPct,
+    };
   }
 
-  // COVERT_COUP
   const spyPower = attacker.intelLevel * 9 + attacker.upgrades.INTELLIGENCE * 14;
   const winPct = Math.min(88, Math.max(16, Math.round(34 + (spyPower - effectiveGarrison * 0.55) * 0.6)));
   return { winPct, canExecute: true, errorFa: null, expectedProgressPct: 0 };
@@ -955,15 +1387,41 @@ export function getSmartCabinetAdvice(room: GameRoomState, countryId: CountryId)
 
   if (c.powerGrid < 68) {
     const pInfo = getInfraNextCost(c, 'POWER_PLANT', room.settings.difficulty);
-    if (canBuildMore && c.infrastructure.POWER_PLANT < INFRASTRUCTURE_CATALOG.POWER_PLANT.maxLevel && c.treasuryB >= pInfo.costB) {
+    if (
+      canBuildMore &&
+      c.infrastructure.POWER_PLANT < INFRASTRUCTURE_CATALOG.POWER_PLANT.maxLevel &&
+      c.treasuryB >= pInfo.costB
+    ) {
       suggestions.push({
         id: 'adv-power',
         ministerFa: 'وزیر نیرو',
         urgency: 'HIGH',
-        titleFa: pInfo.isRebuild ? `بازسازی نیروگاه آسیب‌دیده (${c.powerGrid}٪ برق)` : `تقویت فوری شبکه برق (${c.powerGrid}٪)`,
+        titleFa: pInfo.isRebuild
+          ? `بازسازی نیروگاه آسیب‌دیده (${c.powerGrid}٪ برق)`
+          : `تقویت فوری شبکه برق (${c.powerGrid}٪)`,
         subtitleFa: 'افت برق، درآمد اقتصادی و دقت رادار پدافند را کاهش می‌دهد.',
         buttonLabelFa: `${pInfo.isRebuild ? 'بازسازی نیروگاه' : 'ساخت نیروگاه'} ($${pInfo.costB}B)`,
         quickAction: { type: 'INSTANT_INFRA', infraType: 'POWER_PLANT' },
+      });
+    }
+  }
+
+  if (
+    suggestions.length < 3 &&
+    c.sanctionedBy.length >= 2 &&
+    c.upgradesUsedThisRound < maxUps &&
+    c.upgrades.ECONOMIC_SOVEREIGNTY < UPGRADE_TRACKS.ECONOMIC_SOVEREIGNTY.maxLevel
+  ) {
+    const cost = getUpgradeNextCost(c, 'ECONOMIC_SOVEREIGNTY', room.settings.difficulty);
+    if (c.treasuryB >= cost) {
+      suggestions.push({
+        id: 'adv-econ-sov',
+        ministerFa: 'رئیس کل بانک مرکزی',
+        urgency: 'HIGH',
+        titleFa: `خنثی‌سازی تحریم‌ها با دکترین اقتصاد مقاومتی سطح ${c.upgrades.ECONOMIC_SOVEREIGNTY + 1}`,
+        subtitleFa: 'کاهش مستقیم زیان تحریم‌ها و +$10B درآمد ارزی پایدار.',
+        buttonLabelFa: `ارتقای اقتصاد مقاومتی ($${cost}B)`,
+        quickAction: { type: 'INSTANT_UPGRADE', track: 'ECONOMIC_SOVEREIGNTY' },
       });
     }
   }
@@ -977,10 +1435,10 @@ export function getSmartCabinetAdvice(room: GameRoomState, countryId: CountryId)
     if (c.treasuryB >= cost) {
       suggestions.push({
         id: 'adv-industry',
-        ministerFa: 'وزیر اقتصاد',
+        ministerFa: 'وزیر صمت و اقتصاد',
         urgency: 'OPPORTUNITY',
         titleFa: `ارتقای دکترین ابرصنعت به سطح ${c.upgrades.INDUSTRY + 1}`,
-        subtitleFa: '+$18B درآمد ماهانه دائمی و تخفیف ساخت تسلیحات.',
+        subtitleFa: '+$11B درآمد صنعتی خالص و تخفیف ساخت تسلیحات بومی.',
         buttonLabelFa: `ارتقای ابرصنعت ($${cost}B)`,
         quickAction: { type: 'INSTANT_UPGRADE', track: 'INDUSTRY' },
       });
@@ -1016,10 +1474,11 @@ export function getIndigenousOrAllyWeaponCost(
 
   const diffMult = getDifficultyPlayerCostMult(difficulty, country.playerId !== null);
   const discount = Math.min(
-    0.35,
-    country.infrastructure.ARMS_FACTORY * 0.025 + country.upgrades.INDUSTRY * 0.035
+    0.32,
+    country.infrastructure.ARMS_FACTORY * 0.022 + country.upgrades.INDUSTRY * 0.032
   );
-  const sellRefundB = Math.max(4, Math.round(spec.unitCostB * 0.72));
+  // Secondhand / scrap refund reduced to 50% so reselling weapons cannot print easy cash
+  const sellRefundB = Math.max(4, Math.round(spec.unitCostB * 0.5));
 
   let lockedReasonFa: string | null = null;
   if (spec.minTrack && (country.upgrades[spec.minTrack.track] || 0) < spec.minTrack.level) {
@@ -1032,7 +1491,7 @@ export function getIndigenousOrAllyWeaponCost(
       canBuildDirectly: true,
       isAllyLicensed: false,
       lockedReasonFa,
-      finalCostB: Math.max(5, Math.round(spec.unitCostB * (1 - discount) * diffMult)),
+      finalCostB: Math.max(6, Math.round(spec.unitCostB * (1 - discount) * diffMult)),
       sellRefundB,
       producerCountry: spec.originCountry,
     };
@@ -1045,7 +1504,7 @@ export function getIndigenousOrAllyWeaponCost(
       canBuildDirectly: true,
       isAllyLicensed: true,
       lockedReasonFa,
-      finalCostB: Math.max(6, Math.round(spec.unitCostB * (1.1 - discount * 0.45) * diffMult)),
+      finalCostB: Math.max(7, Math.round(spec.unitCostB * (1.14 - discount * 0.4) * diffMult)),
       sellRefundB,
       producerCountry: spec.originCountry,
     };
@@ -1054,7 +1513,7 @@ export function getIndigenousOrAllyWeaponCost(
     canBuildDirectly: false,
     isAllyLicensed: false,
     lockedReasonFa: null,
-    finalCostB: Math.round(spec.unitCostB * 1.15 * diffMult),
+    finalCostB: Math.round(spec.unitCostB * 1.18 * diffMult),
     sellRefundB,
     producerCountry: spec.originCountry,
   };

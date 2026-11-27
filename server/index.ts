@@ -5,7 +5,11 @@ import fs from 'node:fs';
 import { createServer } from 'node:http';
 import path from 'node:path';
 import { Server, Socket } from 'socket.io';
-import { evaluateAITradeOffer, processInteractiveAIChat } from './aiNations.js';
+import {
+  evaluateAITradeOffer,
+  processInteractiveAIChat,
+  seedInitialAIStancesOnResolution,
+} from './aiNations.js';
 import {
   addIntel,
   addNews,
@@ -17,6 +21,7 @@ import {
   createResolutionSpec,
   executeAcceptedTrade,
   executeDiplomaticAction,
+  executeFalseFlagSabotage,
   instantBuildInfra,
   instantEmergencyAction,
   instantLaunchSatellite,
@@ -26,14 +31,18 @@ import {
   instantSellWeapon,
   instantSetChokepoint,
   instantSpotTrade,
+  instantUpgradeConstellation,
   instantUpgradeTrack,
   joinCoalition,
   leaveCoalition,
   prepareEndOfPlanning,
   prepareResumedRoom,
+  proposeStrategicRequest,
   queuePlayerOrder,
+  rerollCountryMission,
   resetRoomForRematch,
   resolveCurrentRound,
+  respondStrategicRequest,
   sanitizeRoomForPlayer,
   updateRankingsAndDefcon,
   verifyCreatorKey,
@@ -41,6 +50,7 @@ import {
 import { RoomStore } from './store.js';
 import {
   AlertPosture,
+  ChokepointId,
   ChokepointStatus,
   CountryId,
   CovertOpType,
@@ -54,7 +64,10 @@ import {
   InfrastructureType,
   MilitaryOpType,
   MinorNationOpType,
+  RequestLeverageMode,
   ResolutionKind,
+  SpaceConstellationId,
+  StrategicRequestKind,
   StrikeTargetSector,
   TradeOffer,
   TradeResourceKind,
@@ -185,7 +198,7 @@ export function createAppServer() {
   }
 
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, version: '5.0.0', uptime: process.uptime() });
+    res.json({ ok: true, version: '6.0.0', uptime: process.uptime() });
   });
 
   io.on('connection', (socket: Socket) => {
@@ -272,7 +285,8 @@ export function createAppServer() {
         if (payload.rawRoomJson) {
           try {
             const parsed = JSON.parse(payload.rawRoomJson) as GameRoomState;
-            if (parsed && (parsed.schemaVersion === 5 || (parsed.schemaVersion as number) === 4) && parsed.countries?.IR) {
+            const sv = parsed?.schemaVersion as number;
+            if (parsed && (sv === 6 || sv === 5 || sv === 4) && parsed.countries?.IR) {
               savedRoom = parsed;
             }
           } catch {
@@ -286,7 +300,7 @@ export function createAppServer() {
         if (!savedRoom) {
           cb?.({
             ok: false,
-            errorFa: 'کد یا فایل ذخیره بازی (نسخه ۴.۰) یافت نشد! لطفاً کد SV-... یا فایل .ww3save.json را بررسی کنید.',
+            errorFa: 'کد یا فایل ذخیره بازی یافت نشد! لطفاً کد SV-... یا فایل .ww3save.json را بررسی کنید.',
           });
           return;
         }
@@ -628,6 +642,93 @@ export function createAppServer() {
         if (!ctx?.player.countryId) return;
         const res = instantLaunchSatellite(ctx.room, ctx.player.countryId);
         if (res.ok) broadcastRoom(ctx.room);
+        cb?.(res);
+      }
+    );
+
+    socket.on(
+      'game:upgrade_constellation',
+      (
+        constellationId: SpaceConstellationId,
+        cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void
+      ) => {
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const res = instantUpgradeConstellation(ctx.room, ctx.player.countryId, constellationId);
+        if (res.ok) broadcastRoom(ctx.room);
+        cb?.(res);
+      }
+    );
+
+    socket.on(
+      'game:reroll_mission',
+      (
+        missionId: string,
+        cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void
+      ) => {
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const res = rerollCountryMission(ctx.room, ctx.player.countryId, missionId);
+        if (res.ok) broadcastRoom(ctx.room);
+        cb?.(res);
+      }
+    );
+
+    socket.on(
+      'game:false_flag_sabotage',
+      (
+        payload: { targetCountry: CountryId; thirdCountry: CountryId },
+        cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void
+      ) => {
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const res = executeFalseFlagSabotage(
+          ctx.room,
+          ctx.player.countryId,
+          payload.targetCountry,
+          payload.thirdCountry
+        );
+        broadcastRoom(ctx.room);
+        cb?.(res);
+      }
+    );
+
+    socket.on(
+      'game:propose_request',
+      (
+        payload: {
+          targetCountry: CountryId;
+          kind: StrategicRequestKind;
+          leverage: RequestLeverageMode;
+          offeredCashB?: number;
+          thirdCountry?: CountryId;
+          chokepointId?: ChokepointId;
+        },
+        cb?: (res: { ok: boolean; status?: string; messageFa?: string; errorFa?: string }) => void
+      ) => {
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const res = proposeStrategicRequest(ctx.room, ctx.player.countryId, payload);
+        broadcastRoom(ctx.room);
+        cb?.(res);
+      }
+    );
+
+    socket.on(
+      'game:respond_request',
+      (
+        payload: { requestId: string; accept: boolean },
+        cb?: (res: { ok: boolean; messageFa?: string; errorFa?: string }) => void
+      ) => {
+        const ctx = getActiveContext(socket.id);
+        if (!ctx?.player.countryId) return;
+        const res = respondStrategicRequest(
+          ctx.room,
+          ctx.player.countryId,
+          payload.requestId,
+          payload.accept
+        );
+        broadcastRoom(ctx.room);
         cb?.(res);
       }
     );
@@ -1072,9 +1173,16 @@ export function createAppServer() {
           cb?.({ ok: false, errorFa: 'حداکثر ۳ جلسه/قطعنامه همزمان در هر ماه قابل طرح است.' });
           return;
         }
+        const duplicateActive = room.resolutions.some(
+          (r) => r.status === 'ACTIVE' && r.target === target.id && r.kind === payload.kind
+        );
+        if (duplicateActive) {
+          cb?.({ ok: false, errorFa: 'قطعنامه مشابهی علیه این کشور هم‌اکنون در صحن علنی در حال رای‌گیری است!' });
+          return;
+        }
 
         const spec = createResolutionSpec(proposer, target, payload.kind);
-        room.resolutions.unshift({
+        const newRes = {
           id: uid('un'),
           round: room.round,
           proposer: proposer.id,
@@ -1083,11 +1191,14 @@ export function createAppServer() {
           committeeFa: spec.committeeFa,
           titleFa: spec.titleFa,
           effectSummaryFa: spec.effectSummaryFa,
-          votesYes: [proposer.id],
-          votesNo: [],
+          votesYes: [proposer.id] as CountryId[],
+          votesNo: [] as CountryId[],
           vetoedBy: null,
-          status: 'ACTIVE',
-        });
+          vetoReasonFa: null,
+          status: 'ACTIVE' as const,
+        };
+        seedInitialAIStancesOnResolution(room, newRes);
+        room.resolutions.unshift(newRes);
         broadcastRoom(room);
         cb?.({ ok: true });
       }

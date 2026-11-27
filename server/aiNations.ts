@@ -1,11 +1,14 @@
 import {
   computeCountryMilitary,
   estimateCovertSuccessPct,
-  estimateMilitarySuccessPct,
   evaluateMilitaryOpDetails,
   evaluateMinorOpDetails,
+  getConstellationUpgradeInfo,
   getEmergencyActionCost,
   getInfraNextCost,
+  getMaxBuildsPerRound,
+  getMaxUpgradesPerRound,
+  getTotalConstellationSatellites,
   getUpgradeNextCost,
 } from '../shared/advisor.js';
 import {
@@ -23,6 +26,7 @@ import {
   InfrastructureType,
   MilitaryOpType,
   ResolutionKind,
+  SpaceConstellationId,
   TradeOffer,
   UNResolution,
   UpgradeTrack,
@@ -53,12 +57,12 @@ export function evaluateAITradeOffer(
 
   const rel = ai.relations[sender.id] ?? 15;
   const hardModeFactor =
-    room.settings.difficulty === 'EXTREME' ? 1.22 : room.settings.difficulty === 'HARD' ? 1.1 : 1;
+    room.settings.difficulty === 'EXTREME' ? 1.24 : room.settings.difficulty === 'HARD' ? 1.12 : 1;
 
-  // 1. PEACE TREATY (BUG-FREE! Works even between bitter enemies & rivals!)
+  // 1. PEACE TREATY
   if (offer.offerType === 'PEACE_TREATY') {
     const aiWantsPeace = ai.devastation >= 35 || ai.approval < 45 || rel >= 0;
-    const minReparations = aiWantsPeace ? 0 : Math.round(15 * hardModeFactor);
+    const minReparations = aiWantsPeace ? 0 : Math.round(18 * hardModeFactor);
     if (offer.priceB >= minReparations) {
       return {
         accepted: true,
@@ -73,7 +77,7 @@ export function evaluateAITradeOffer(
 
   // 2. LIFT SANCTION
   if (offer.offerType === 'LIFT_SANCTION') {
-    const minScore = rel >= 20 ? 10 : Math.round(25 * hardModeFactor);
+    const minScore = rel >= 20 ? 12 : Math.round(28 * hardModeFactor);
     if (offer.priceB >= minScore && ai.lastAttackedBy !== sender.id) {
       return {
         accepted: true,
@@ -86,18 +90,18 @@ export function evaluateAITradeOffer(
     };
   }
 
-  // 2.5 SECRET BACKROOM DEFENSE PACT (Idea #2 — Hidden ambush alliance!)
+  // 2.5 SECRET BACKROOM DEFENSE PACT
   if (offer.offerType === 'SECRET_DEFENSE_PACT') {
     if (ai.secretAllies.includes(sender.id) || ai.allies.includes(sender.id)) {
       return { accepted: true, reasonFa: 'پیمان دفاعی هم‌اکنون برقرار است.' };
     }
-    if (ai.lastAttackedBy === sender.id || rel < 8) {
+    if (ai.lastAttackedBy === sender.id || rel < 12) {
       return {
         accepted: false,
-        reasonFa: `سطح اعتماد سیاسی (${rel}) برای امضای پیمان دفاعی محرمانه کافی نیست (حداقل رابطه +۱۰ لازم است).`,
+        reasonFa: `سطح اعتماد سیاسی (${rel}) برای امضای پیمان دفاعی محرمانه کافی نیست (حداقل رابطه +۱۲ لازم است).`,
       };
     }
-    const minSecretCost = rel >= 45 ? 12 : Math.round(22 * hardModeFactor);
+    const minSecretCost = rel >= 45 ? 15 : Math.round(25 * hardModeFactor);
     if (offer.priceB >= minSecretCost) {
       return {
         accepted: true,
@@ -110,18 +114,18 @@ export function evaluateAITradeOffer(
     };
   }
 
-  // 3. FORMAL MILITARY ALLIANCE (Checks bilateral relation instead of permanent hardcoded block!)
+  // 3. FORMAL MILITARY ALLIANCE
   if (offer.offerType === 'ALLIANCE') {
     if (ai.allies.includes(sender.id)) {
       return { accepted: true, reasonFa: 'پیمان دفاعی مشترک هم‌اکنون برقرار است.' };
     }
-    if (ai.lastAttackedBy === sender.id || rel < 18) {
+    if (ai.lastAttackedBy === sender.id || rel < 22) {
       return {
         accepted: false,
-        reasonFa: `سطح روابط سیاسی (${rel}) برای اتحاد نظامی پایین است! ابتدا «پیمان صلح» ببندید یا هیئت دوستی بفرستید تا رابطه بالای +۲۰ برسد.`,
+        reasonFa: `سطح روابط سیاسی (${rel}) برای اتحاد نظامی پایین است! ابتدا «پیمان صلح» ببندید یا هیئت دوستی بفرستید تا رابطه بالای +۲۲ برسد.`,
       };
     }
-    const minPact = rel >= 55 ? 10 : Math.round(24 * hardModeFactor);
+    const minPact = rel >= 55 ? 14 : Math.round(28 * hardModeFactor);
     if (offer.priceB >= minPact) {
       return {
         accepted: true,
@@ -153,7 +157,7 @@ export function evaluateAITradeOffer(
         };
       }
       const qty = Math.max(1, offer.amount || 1);
-      const minPrice = Math.round(spec.unitCostB * qty * (ai.allies.includes(sender.id) ? 1.0 : 1.1));
+      const minPrice = Math.round(spec.unitCostB * qty * (ai.allies.includes(sender.id) ? 1.05 : 1.18));
       if (offer.priceB >= minPrice) {
         return {
           accepted: true,
@@ -165,13 +169,13 @@ export function evaluateAITradeOffer(
         reasonFa: `وزارت دفاع ${ai.nameFa} حداقل قیمت این محموله را $${minPrice}B اعلام کرد.`,
       };
     } else {
-      // Player SELLING surplus weapon from their own arsenal to AI!
+      // Tightened AI purchase price for player's used weapons so players cannot print cash!
       const qty = Math.max(1, offer.amount || 1);
-      const maxAiWillPay = Math.round(spec.unitCostB * qty * 0.85);
-      if (ai.treasuryB < offer.priceB + 25) {
+      const maxAiWillPay = Math.round(spec.unitCostB * qty * 0.58);
+      if (ai.treasuryB < offer.priceB + 35) {
         return { accepted: false, reasonFa: `${ai.nameFa} بودجه کافی برای خرید این سامانه ندارد.` };
       }
-      if (offer.priceB <= maxAiWillPay && rel > -25) {
+      if (offer.priceB <= maxAiWillPay && rel > -20) {
         return {
           accepted: true,
           reasonFa: `ارتش ${ai.nameFa} سامانه «${spec.nameFa}» ارسالی شما را به مبلغ $${offer.priceB}B خریداری کرد!`,
@@ -184,32 +188,32 @@ export function evaluateAITradeOffer(
     }
   }
 
-  // 5. BILATERAL RESOURCE DEALS (OIL, GAS, FOOD, WATER, URANIUM)
+  // 5. BILATERAL RESOURCE DEALS (Realistic tightened pricing!)
   const unitFair: Record<string, number> = {
-    OIL: (room.market.oilPriceUsd / 82) * 0.46,
-    GAS: (room.market.gasPriceIndex / 100) * 0.35,
-    FOOD: (room.market.foodPriceIndex / 100) * 0.33,
-    WATER: 0.28,
-    URANIUM: 1.35,
+    OIL: (room.market.oilPriceUsd / 82) * 0.34,
+    GAS: (room.market.gasPriceIndex / 100) * 0.26,
+    FOOD: (room.market.foodPriceIndex / 100) * 0.25,
+    WATER: 0.22,
+    URANIUM: 1.2,
   };
-  const fairTotalB = Math.max(5, Math.round((unitFair[offer.offerType] || 0.35) * offer.amount));
+  const fairTotalB = Math.max(4, Math.round((unitFair[offer.offerType] || 0.28) * offer.amount));
 
   if (offer.direction === 'SELL') {
-    if (ai.treasuryB < offer.priceB + 18) {
+    if (ai.treasuryB < offer.priceB + 25) {
       return { accepted: false, reasonFa: `${ai.nameFa} بودجه مازاد برای این خرید ندارد.` };
     }
-    if (offer.priceB <= Math.round(fairTotalB * 1.22)) {
+    if (offer.priceB <= Math.round(fairTotalB * 1.12)) {
       adjustRelation(ai, sender, 4);
       return {
         accepted: true,
         reasonFa: `${ai.nameFa} محموله ارسالی ${sender.nameFa} را به مبلغ $${offer.priceB}B خریداری کرد (+۴ بهبود رابطه).`,
       };
     }
-    return { accepted: false, reasonFa: `${ai.nameFa} قیمت پیشنهادی را بالاتر از نرخ جهانی دانست.` };
+    return { accepted: false, reasonFa: `${ai.nameFa} قیمت پیشنهادی را بالاتر از نرخ منصفانه قرارداد (${fairTotalB}B) دانست.` };
   }
 
   if (offer.direction === 'BUY') {
-    if (offer.priceB >= Math.round(fairTotalB * 0.86)) {
+    if (offer.priceB >= Math.round(fairTotalB * 0.92)) {
       adjustRelation(ai, sender, 4);
       return {
         accepted: true,
@@ -222,11 +226,6 @@ export function evaluateAITradeOffer(
   return { accepted: false, reasonFa: 'پیشنهاد رد شد.' };
 }
 
-/**
- * Interactive AI Chat Engine (Items #11 & #17):
- * Chatting with AI countries genuinely shifts relations, allows sowing discord against third countries,
- * and processes threats/coercion dynamically!
- */
 export function processInteractiveAIChat(
   room: GameRoomState,
   aiCountry: CountryState,
@@ -236,10 +235,10 @@ export function processInteractiveAIChat(
   const aiMil = computeCountryMilitary(aiCountry);
   const humMil = computeCountryMilitary(humanCountry);
   const msg = text.trim();
-  const chatTrackKey = `_chatRelRound_${humanCountry.id}` as keyof CountryState;
-  const alreadyBoostedThisRound = (aiCountry as unknown as Record<string, number>)[chatTrackKey as string] === room.round;
+  const chatTrackKey = `_chatRelRound_${humanCountry.id}`;
+  const alreadyBoostedThisRound =
+    (aiCountry as unknown as Record<string, number>)[chatTrackKey] === room.round;
 
-  // Check if human is sowing discord against a specific 3rd country!
   const mentionedThird = Object.values(room.countries).find(
     (c) => c.id !== aiCountry.id && c.id !== humanCountry.id && msg.includes(c.nameFa)
   );
@@ -253,34 +252,32 @@ export function processInteractiveAIChat(
       msg.includes('تحریم') ||
       msg.includes('اتم'))
   ) {
-    const persuadeChance = 40 + humanCountry.upgrades.INTELLIGENCE * 6 + (aiCountry.relations[humanCountry.id] > 20 ? 15 : 0);
+    const pairRel = aiCountry.relations[mentionedThird.id] ?? 15;
+    const persuadeChance =
+      32 +
+      humanCountry.upgrades.INTELLIGENCE * 5 +
+      (aiCountry.relations[humanCountry.id] > 25 ? 14 : 0) -
+      (pairRel >= 60 ? 22 : 0);
     if (Math.random() * 100 < persuadeChance && !alreadyBoostedThisRound) {
-      (aiCountry as unknown as Record<string, number>)[chatTrackKey as string] = room.round;
-      adjustRelation(aiCountry, mentionedThird, -18);
-      if (aiCountry.relations[mentionedThird.id] < 10) {
-        aiCountry.allies = aiCountry.allies.filter((id) => id !== mentionedThird.id);
-        mentionedThird.allies = mentionedThird.allies.filter((id) => id !== aiCountry.id);
-      }
-      return `وزارت خارجه ${aiCountry.nameFa}: گزارش محرمانه شما درباره تهدیدات «${mentionedThird.nameFa}» در شورای امنیت ملی ما بررسی و تایید شد! سطح اعتماد ما به ${mentionedThird.nameFa} کاهش یافت (رابطه فعلی با آن‌ها: ${aiCountry.relations[mentionedThird.id]}).`;
+      (aiCountry as unknown as Record<string, number>)[chatTrackKey] = room.round;
+      adjustRelation(aiCountry, mentionedThird, -12);
+      return `وزارت خارجه ${aiCountry.nameFa}: هشدار امنیتی شما درباره «${mentionedThird.nameFa}» ثبت شد و حساسیت اطلاعاتی ما افزایش یافت (رابطه با آن‌ها: ${aiCountry.relations[mentionedThird.id]}). برای اقدام عملی می‌توانید از منوی «درخواست‌های راهبردی» یا «عملیات فریب» استفاده کنید.`;
     }
-    return `سفارت ${aiCountry.nameFa}: ادعاهای مطرح‌شده علیه «${mentionedThird.nameFa}» نیازمند اسناد اطلاعاتی دقیق‌تری است؛ از بخش «عملیات اختلاف‌افکنی» هم می‌توانید پرونده مستند ارسال کنید.`;
+    return `سفارت ${aiCountry.nameFa}: ادعاهای شفاهی علیه «${mentionedThird.nameFa}» بدون شواهد اطلاعاتی کافی پذیرفته نیست؛ برای تغییر جدی معادلات از بخش درخواست‌های راهبردی یا عملیات پرچم دروغین اقدام کنید.`;
   }
 
-  // Coercion / Threat in chat
   if (msg.includes('تهدید') || msg.includes('اولتیماتوم') || msg.includes('عقب‌نشینی') || msg.includes('تسلیم')) {
     const myDeterrence = humMil.attackScore + humMil.defenseScore * 0.5 + humanCountry.warheads * 24;
     const aiDeterrence = aiMil.attackScore + aiMil.defenseScore * 0.7 + aiCountry.warheads * 24;
-    if (myDeterrence > aiDeterrence * 1.25) {
+    if (myDeterrence > aiDeterrence * 1.35 && !aiCountry.isUNVetoMember) {
       aiCountry.orders = aiCountry.orders.filter((o) => o.targetCountry !== humanCountry.id);
-      humanCountry.sanctionedBy = humanCountry.sanctionedBy.filter((id) => id !== aiCountry.id);
       adjustRelation(aiCountry, humanCountry, -8);
-      return `شورای امنیت ملی ${aiCountry.nameFa}: با توجه به آرایش نظامی فعلی، دستور توقف تنش و لغو محدودیت‌ها علیه ${humanCountry.nameFa} صادر شد؛ اما نیروهای ما در حالت آماده‌باش دفاعی می‌مانند.`;
+      return `شورای امنیت ملی ${aiCountry.nameFa}: با توجه به آرایش نظامی فعلی، دستور خویشتن‌داری موقت صادر شد؛ برای توافقات مشخص از بخش «درخواست‌های راهبردی» اقدام کنید.`;
     }
     adjustRelation(aiCountry, humanCountry, -14);
     return `ستاد کل ارتش ${aiCountry.nameFa}: لحن تهدیدآمیز شما مردود است! زرادخانه دفاعی ما آماده پاسخ کوبنده به هرگونه تجاوز است (رابطه به ${aiCountry.relations[humanCountry.id]} کاهش یافت).`;
   }
 
-  // Friendly / Peace / Alliance outreach
   if (
     msg.includes('صلح') ||
     msg.includes('دوست') ||
@@ -290,25 +287,25 @@ export function processInteractiveAIChat(
     msg.includes('توافق')
   ) {
     if (!alreadyBoostedThisRound) {
-      (aiCountry as unknown as Record<string, number>)[chatTrackKey as string] = room.round;
-      adjustRelation(aiCountry, humanCountry, 10);
+      (aiCountry as unknown as Record<string, number>)[chatTrackKey] = room.round;
+      adjustRelation(aiCountry, humanCountry, 8);
       if (aiCountry.relations[humanCountry.id] > -20 && aiCountry.lastAttackedBy === humanCountry.id) {
         aiCountry.lastAttackedBy = null;
       }
     }
     const newRel = aiCountry.relations[humanCountry.id];
     if (newRel >= 30) {
-      return `وزارت خارجه ${aiCountry.nameFa}: از پیام دوستانه ${humanCountry.nameFa} خرسندیم! روابط دو کشور به سطح مثبت (+${newRel}) رسیده و آماده امضای پیمان اتحاد نظامی یا تجارت تسلیحاتی هستیم.`;
+      return `وزارت خارجه ${aiCountry.nameFa}: از پیام دوستانه ${humanCountry.nameFa} خرسندیم! روابط دو کشور به سطح مثبت (+${newRel}) رسیده و آماده بررسی درخواست‌های راهبردی و پیمان دفاعی هستیم.`;
     }
-    return `وزارت خارجه ${aiCountry.nameFa}: گام دیپلماتیک شما فضای مذاکره را بهبود بخشید (سطح رابطه فعلی: ${newRel}). با امضای «پیمان صلح» از منوی دیپلماسی می‌توانید روابط را کاملاً عادی‌سازی کنید.`;
+    return `وزارت خارجه ${aiCountry.nameFa}: گام دیپلماتیک شما فضای مذاکره را بهبود بخشید (رابطه فعلی: ${newRel}).`;
   }
 
-  return `وزارت خارجه ${aiCountry.nameFa} (${aiCountry.capitalFa}): پیام رسمی شما ثبت شد (شاخص رابطه دوجانبه: ${aiCountry.relations[humanCountry.id]}). برای پیشنهاد صلح، تهدید رسمی یا قرارداد تجاری می‌توانید از دکمه‌های مستقیم دیپلماسی نیز اقدام کنید.`;
+  return `وزارت خارجه ${aiCountry.nameFa} (${aiCountry.capitalFa}): پیام رسمی شما ثبت شد (شاخص رابطه دوجانبه: ${aiCountry.relations[humanCountry.id]}). از پنل «درخواست‌های راهبردی» می‌توانید پیشنهادهای عملیاتی ارسال کنید.`;
 }
 
 function runAIChokepointStrategy(
   room: GameRoomState,
-  onChokepointChanged: (country: CountryState, cpNameFa: string, nextStatus: ChokepointStatus, oilPrice: number) => void
+  onChokepointChanged: (country: CountryState, cpNameFa: string, cpCoords: [number, number], nextStatus: ChokepointStatus, oilPrice: number) => void
 ): void {
   for (const cp of Object.values(room.chokepoints)) {
     const ctrl = room.countries[cp.controller];
@@ -337,29 +334,36 @@ function runAIChokepointStrategy(
       } else {
         room.market.oilPriceUsd = Math.max(68, room.market.oilPriceUsd - 14);
       }
-      onChokepointChanged(ctrl, cp.nameFa, desired, room.market.oilPriceUsd);
+      onChokepointChanged(ctrl, cp.nameFa, cp.coordinates, desired, room.market.oilPriceUsd);
     }
   }
 }
 
 /**
- * Living World AI v4.0 (Items #20 & #29):
- * - Anti-Snowball Balance-of-Power Containment against runaway #1 Hegemon!
- * - AI-vs-AI Political Statements, UN Resolutions, IAEA Dossiers & Coalition Invitations!
- * - Realistic Fuel/Water/Food management & progressive territorial operations!
+ * Living World Competitive AI v6.0 (Items #6, #8 & #10):
+ * - Aggressively develops Economy, Science Academies, 10 Doctrines & 4 Space Constellations so AI Superpowers fiercely compete on the Leaderboard!
+ * - Maintains optimal deterrence without bankrupting itself on upkeep!
+ * - Proposes smart, deduplicated UN Security Council resolutions against aggressive expansionists!
  */
 export function runLivingWorldAITurn(
   room: GameRoomState,
   callbacks?: {
-    onChokepointNews?: (country: CountryState, cpNameFa: string, status: ChokepointStatus, oilPrice: number) => void;
+    onChokepointNews?: (
+      country: CountryState,
+      cpNameFa: string,
+      cpCoords: [number, number],
+      status: ChokepointStatus,
+      oilPrice: number
+    ) => void;
     onAIPoliticalNews?: (agencyFa: string, headlineFa: string, bodyFa: string, involved: CountryId[]) => void;
+    onAISpaceLaunch?: (country: CountryState, constellationNameFa: string, nextLv: number) => void;
   }
 ): void {
   if (!room.settings.enableAINations) return;
 
   const diff = room.settings.difficulty || 'NORMAL';
   const isSingle = room.settings.gameMode === 'SINGLE';
-  const aiGrowthChance = diff === 'EXTREME' ? 0.88 : diff === 'HARD' ? 0.72 : 0.56;
+  const aiGrowthChance = diff === 'EXTREME' ? 0.94 : diff === 'HARD' ? 0.84 : 0.72;
   const maxWorldFlashpointAttacks =
     (diff === 'EXTREME' ? 5 : diff === 'HARD' ? 4 : 3) + (isSingle ? 1 : 0);
 
@@ -367,11 +371,10 @@ export function runLivingWorldAITurn(
     runAIChokepointStrategy(room, callbacks.onChokepointNews);
   }
 
-  // Detect Runaway Hegemon (#1 score > 1.32x #2 score after Round 3) for Anti-Snowball Balance!
   const top1 = room.rankings[0];
   const top2 = room.rankings[1];
   const runawayHegemonId: CountryId | null =
-    room.round >= 3 && top1 && top2 && top1.score > top2.score * 1.32 ? top1.countryId : null;
+    room.round >= 3 && top1 && top2 && top1.score > top2.score * 1.24 ? top1.countryId : null;
 
   const aiCountries = Object.values(room.countries).filter(
     (c) => c.playerId === null && !c.isEliminated
@@ -385,24 +388,25 @@ export function runLivingWorldAITurn(
   for (const ai of aiCountries) {
     ai.orders = [];
 
-    if (diff === 'EXTREME') ai.treasuryB += 15;
-    else if (diff === 'HARD') ai.treasuryB += 8;
+    if (diff === 'EXTREME') ai.treasuryB += 22;
+    else if (diff === 'HARD') ai.treasuryB += 12;
+    else if (ai.aiPersonality === 'SUPERPOWER') ai.treasuryB += 6;
 
-    // 1. Emergency Survival, Fuel/Food/Water Refill & Ruin Reconstruction
-    if (ai.oilReserve < 45 && ai.treasuryB >= 30) {
-      ai.treasuryB -= 22;
+    // 1. Emergency Survival & Ruins Reconstruction
+    if (ai.oilReserve < 45 && ai.treasuryB >= 28) {
+      ai.treasuryB -= 20;
       ai.oilReserve += 55;
     }
-    if (ai.foodReserve < 40 && ai.treasuryB >= 22) {
-      ai.treasuryB -= 16;
+    if (ai.foodReserve < 45 && ai.treasuryB >= 20) {
+      ai.treasuryB -= 15;
       ai.foodReserve += 55;
     }
-    if ((ai.waterReserve || 0) < 40 && ai.treasuryB >= 18) {
+    if ((ai.waterReserve || 0) < 45 && ai.treasuryB >= 18) {
       ai.treasuryB -= 14;
       ai.waterReserve = (ai.waterReserve || 0) + 55;
     }
 
-    if (ai.devastation >= 40 || ai.approval < 36) {
+    if (ai.devastation >= 38 || ai.approval < 42) {
       const rCost = getEmergencyActionCost(ai, 'NATIONAL_RELIEF');
       if (ai.treasuryB >= rCost) {
         ai.treasuryB -= rCost;
@@ -414,7 +418,7 @@ export function runLivingWorldAITurn(
     for (const infraKey of Object.keys(INFRASTRUCTURE_CATALOG) as InfrastructureType[]) {
       if ((ai.damagedInfra[infraKey] || 0) > 0) {
         const reb = getInfraNextCost(ai, infraKey, diff);
-        if (ai.treasuryB >= reb.costB + 20) {
+        if (ai.treasuryB >= reb.costB + 15) {
           ai.treasuryB -= reb.costB;
           ai.damagedInfra[infraKey] -= 1;
           ai.infrastructure[infraKey] += 1;
@@ -423,94 +427,147 @@ export function runLivingWorldAITurn(
       }
     }
 
-    // 2. Research Doctrines & Science Academies
-    if (ai.treasuryB >= 95 && Math.random() < aiGrowthChance) {
+    // 2. Competitive Multi-Slot Doctrine Upgrades (All 10 Doctrines!)
+    const maxUps = getMaxUpgradesPerRound(ai);
+    for (let uSlot = 0; uSlot < maxUps; uSlot++) {
+      if (ai.treasuryB < 65 || Math.random() > aiGrowthChance) break;
       const priorityTracks: UpgradeTrack[] =
-        ai.aiPersonality === 'ECONOMIC_POWER'
-          ? ['INDUSTRY', 'AIR_DEFENSE', 'CYBER_AI', 'AEROSPACE', 'NAVAL_POWER']
+        ai.sanctionedBy.length >= 2
+          ? ['ECONOMIC_SOVEREIGNTY', 'INDUSTRY', 'SPACE_ORBITAL', 'AIR_DEFENSE', 'AEROSPACE', 'INTELLIGENCE']
+          : ai.aiPersonality === 'ECONOMIC_POWER'
+          ? ['INDUSTRY', 'ECONOMIC_SOVEREIGNTY', 'SPACE_ORBITAL', 'CYBER_AI', 'AIR_DEFENSE', 'AEROSPACE']
           : ai.aiPersonality === 'SUPERPOWER'
-          ? ['INDUSTRY', 'AEROSPACE', 'NAVAL_POWER', 'ARMOR_LAND', 'CYBER_AI', 'INTELLIGENCE', 'AIR_DEFENSE']
-          : ['AEROSPACE', 'AIR_DEFENSE', 'ARMOR_LAND', 'INTELLIGENCE', 'INDUSTRY', 'NUCLEAR'];
+          ? ['INDUSTRY', 'SPACE_ORBITAL', 'ECONOMIC_SOVEREIGNTY', 'AEROSPACE', 'CYBER_AI', 'INTELLIGENCE', 'AIR_DEFENSE', 'NAVAL_POWER', 'ARMOR_LAND']
+          : ['INDUSTRY', 'AEROSPACE', 'AIR_DEFENSE', 'ECONOMIC_SOVEREIGNTY', 'ARMOR_LAND', 'INTELLIGENCE', 'SPACE_ORBITAL', 'NUCLEAR'];
 
-      const candidate = priorityTracks.find((t) => ai.upgrades[t] < UPGRADE_TRACKS[t].maxLevel);
-      if (candidate) {
-        const upCost = getUpgradeNextCost(ai, candidate, diff);
-        if (ai.treasuryB >= upCost + 30) {
-          ai.treasuryB -= upCost;
-          ai.upgrades[candidate] += 1;
-          if (candidate === 'INDUSTRY') ai.gdpB += 30;
-          if (candidate === 'NUCLEAR' && ai.upgrades.NUCLEAR >= 5 && ai.warheads === 0) {
-            ai.nuclearProgress = 100;
-            ai.warheads = 2;
-          }
+      // Pick lowest-level priority track so AI develops harmoniously and competitively!
+      const available = priorityTracks
+        .filter((t) => (ai.upgrades[t] || 0) < UPGRADE_TRACKS[t].maxLevel)
+        .sort((a, b) => (ai.upgrades[a] || 0) - (ai.upgrades[b] || 0));
+
+      const candidate = available[0];
+      if (!candidate) break;
+      const upCost = getUpgradeNextCost(ai, candidate, diff);
+      if (ai.treasuryB >= upCost + 22) {
+        ai.treasuryB -= upCost;
+        ai.upgrades[candidate] = (ai.upgrades[candidate] || 0) + 1;
+        if (candidate === 'INDUSTRY') ai.gdpB += 32;
+        if (candidate === 'ECONOMIC_SOVEREIGNTY') ai.gdpB += 18;
+        if (candidate === 'AEROSPACE' || candidate === 'SPACE_ORBITAL') ai.techLevel = clamp(ai.techLevel + 1, 1, 12);
+        if (candidate === 'INTELLIGENCE') ai.intelLevel = clamp(ai.intelLevel + 1, 1, 12);
+        if (candidate === 'NUCLEAR' && ai.upgrades.NUCLEAR >= 5 && ai.warheads === 0) {
+          ai.nuclearProgress = 100;
+          ai.warheads = 2;
         }
       }
     }
 
-    if (ai.treasuryB >= 115 && Math.random() < aiGrowthChance * 0.75) {
+    // 2b. High-ROI Infrastructure (Science Academies, Welfare, Power, Refineries)
+    const maxBuilds = getMaxBuildsPerRound(ai);
+    if (ai.treasuryB >= 80 && Math.random() < aiGrowthChance * 0.85 && maxBuilds > 0) {
       const infraPick: InfrastructureType =
-        ai.infrastructure.SCIENCE_ACADEMY < 5 && Math.random() < 0.35
+        (ai.infrastructure.SCIENCE_ACADEMY || 0) < 6
           ? 'SCIENCE_ACADEMY'
-          : ai.oilProduction >= 70
-          ? 'REFINERY'
-          : ai.approval < 62
+          : ai.powerGrid < 82
+          ? 'POWER_PLANT'
+          : ai.approval < 74
           ? 'WELFARE_HUB'
+          : ai.oilProduction >= 65
+          ? 'REFINERY'
           : 'ARMS_FACTORY';
       const infCost = getInfraNextCost(ai, infraPick, diff);
-      if (ai.infrastructure[infraPick] < INFRASTRUCTURE_CATALOG[infraPick].maxLevel && ai.treasuryB >= infCost.costB + 30) {
+      if (ai.infrastructure[infraPick] < INFRASTRUCTURE_CATALOG[infraPick].maxLevel && ai.treasuryB >= infCost.costB + 25) {
         ai.treasuryB -= infCost.costB;
         ai.infrastructure[infraPick] += 1;
+        if (infraPick === 'SCIENCE_ACADEMY') {
+          ai.techLevel = clamp(ai.techLevel + 1, 1, 12);
+          ai.gdpB += 12;
+        } else if (infraPick === 'WELFARE_HUB') {
+          ai.approval = clamp(ai.approval + 8, 0, 100);
+        } else if (infraPick === 'POWER_PLANT') {
+          ai.powerGrid = clamp(ai.powerGrid + 14, 0, 100);
+        }
       }
     }
 
-    const mil = computeCountryMilitary(ai);
-    // AI Space Command: launch orbital satellites when Aerospace >= 3
-    if (
-      (ai.orbitalSatellites || 0) < 3 &&
-      ai.upgrades.AEROSPACE >= 3 &&
-      ai.treasuryB >= 130 &&
-      Math.random() < 0.32
-    ) {
-      ai.treasuryB -= 36;
-      ai.orbitalSatellites = (ai.orbitalSatellites || 0) + 1;
+    // 2c. AI Space Constellations Deployment (4 Orbital Constellations!)
+    if (ai.treasuryB >= 85 && Math.random() < (ai.aiPersonality === 'SUPERPOWER' ? 0.55 : 0.34)) {
+      const satOrder: SpaceConstellationId[] = ['SATCOM_EW', 'RECON_OPTICAL', 'SBIRS_SHIELD', 'GNSS_NAVI'];
+      for (const cid of satOrder) {
+        const info = getConstellationUpgradeInfo(ai, cid, diff);
+        if (info.canUpgrade && ai.treasuryB >= info.costB + 25) {
+          ai.treasuryB -= info.costB;
+          ai.oilReserve = Math.max(0, ai.oilReserve - info.fuelCost);
+          ai.constellations[cid] = (ai.constellations[cid] || 0) + 1;
+          ai.orbitalSatellites = getTotalConstellationSatellites(ai);
+          callbacks?.onAISpaceLaunch?.(ai, cid, ai.constellations[cid]);
+          break;
+        }
+      }
     }
 
-    // AI participates in Global Flashpoint if active
+    // 2d. AI Diplomatic Alliance Building (Boosts AI Influence Score!)
+    if (Math.random() < 0.28 && ai.allies.length < 6) {
+      const potentialAlly = aiCountries.find(
+        (other) =>
+          other.id !== ai.id &&
+          !ai.allies.includes(other.id) &&
+          (ai.relations[other.id] ?? 0) >= 42 &&
+          !ai.rivals.includes(other.id)
+      );
+      if (potentialAlly) {
+        ai.allies.push(potentialAlly.id);
+        potentialAlly.allies.push(ai.id);
+        adjustRelation(ai, potentialAlly, 12);
+      }
+    }
+
     if (room.activeFlashpoint && !room.activeFlashpoint.chosenBy[ai.id]) {
-      room.activeFlashpoint.chosenBy[ai.id] = ai.treasuryB >= 60 ? 'A' : 'C';
+      room.activeFlashpoint.chosenBy[ai.id] = ai.treasuryB >= 55 ? 'A' : 'C';
+      if (room.activeFlashpoint.chosenBy[ai.id] === 'A' && ai.treasuryB >= 26) {
+        ai.treasuryB -= 20;
+        ai.gdpB += 24;
+      }
     }
 
-    if (ai.treasuryB >= 105 && mil.totalUnits < 36 && Math.random() < aiGrowthChance * 0.82) {
+    // 2e. Smart Optimal Deterrence Army Cap (AI avoids bankrupting itself on excess units!)
+    const mil = computeCountryMilitary(ai);
+    const optimalMaxUnits = ai.aiPersonality === 'SUPERPOWER' ? 25 : 18;
+    if (ai.treasuryB >= 90 && mil.totalUnits < optimalMaxUnits && Math.random() < aiGrowthChance * 0.65) {
       const buildable = Object.values(WEAPONS_CATALOG).filter(
         (w) =>
           (w.originCountry === ai.id || ai.allies.includes(w.originCountry)) &&
-          (!w.minTrack || ai.upgrades[w.minTrack.track] >= w.minTrack.level)
+          (!w.minTrack || (ai.upgrades[w.minTrack.track] || 0) >= w.minTrack.level)
       );
       if (buildable.length > 0) {
         const w = buildable[Math.floor(Math.random() * buildable.length)];
-        if (ai.treasuryB >= w.unitCostB + 25) {
+        if (ai.treasuryB >= w.unitCostB + 30) {
           ai.treasuryB -= w.unitCostB;
           ai.weapons[w.id] = (ai.weapons[w.id] || 0) + 1;
         }
       }
     }
 
-    // 3. Anti-Snowball Counter-Hegemon Operations (Prevents wealthy superpower invincibility!)
+    // 3. Anti-Snowball Counter-Hegemon Operations
     if (
       runawayHegemonId &&
       runawayHegemonId !== ai.id &&
       !ai.allies.includes(runawayHegemonId) &&
       (ai.aiPersonality === 'SUPERPOWER' || ai.aiPersonality === 'REGIONAL_HAWK') &&
       aiMilitaryActionsThisRound < maxWorldFlashpointAttacks &&
-      Math.random() < 0.38
+      Math.random() < 0.44
     ) {
       const hegemon = room.countries[runawayHegemonId];
-      if (hegemon && !hegemon.isEliminated && !(ai.nonAggressionPacts[hegemon.id] && ai.nonAggressionPacts[hegemon.id]! >= room.round)) {
-        if (!hegemon.sanctionedBy.includes(ai.id) && ai.relations[hegemon.id] < 10) {
+      if (
+        hegemon &&
+        !hegemon.isEliminated &&
+        !(ai.nonAggressionPacts[hegemon.id] && ai.nonAggressionPacts[hegemon.id]! >= room.round)
+      ) {
+        if (!hegemon.sanctionedBy.includes(ai.id) && ai.relations[hegemon.id] < 15) {
           hegemon.sanctionedBy.push(ai.id);
         }
-        if (ai.treasuryB >= 22) {
-          const covPick: CovertOpType = hegemon.treasuryB >= 450 ? 'TREASURY_HEIST' : 'STUXNET_SABOTAGE';
+        if (ai.treasuryB >= 24) {
+          const covPick: CovertOpType = hegemon.treasuryB >= 320 ? 'TREASURY_HEIST' : 'STUXNET_SABOTAGE';
           ai.treasuryB -= 18;
           aiMilitaryActionsThisRound += 1;
           ai.orders.push({
@@ -530,12 +587,17 @@ export function runLivingWorldAITurn(
       }
     }
 
-    // 4. DECISIVE RETALIATION (Respects active Peace Truces!)
+    // 4. DECISIVE RETALIATION (Includes AI-vs-AI fallout triggered by False-Flag Sabotage!)
     if (ai.lastAttackedBy && room.countries[ai.lastAttackedBy] && !room.countries[ai.lastAttackedBy].isEliminated) {
       const aggressor = room.countries[ai.lastAttackedBy];
       const hasTruce = (ai.nonAggressionPacts[aggressor.id] || 0) >= room.round;
       if (!hasTruce && ai.treasuryB >= 22) {
-        const candidates: MilitaryOpType[] = ['MISSILE_DRONE_STRIKE', 'AIR_SORTIE', 'NAVAL_BLOCKADE_STRIKE', 'GROUND_CONQUEST'];
+        const candidates: MilitaryOpType[] = [
+          'MISSILE_DRONE_STRIKE',
+          'AIR_SORTIE',
+          'NAVAL_BLOCKADE_STRIKE',
+          'GROUND_CONQUEST',
+        ];
         const validOp = candidates.find(
           (op) => evaluateMilitaryOpDetails(ai, aggressor, op, room.round, room.minorNations).canExecute
         );
@@ -556,7 +618,7 @@ export function runLivingWorldAITurn(
               costB: opCost,
               fuelCost: det.fuelCost,
               summaryFa: `عملیات تلافی‌جویانه ${ai.nameFa} علیه ${aggressor.nameFa}`,
-              expectedImpactFa: 'پاسخ مستقیم به تجاوز نظامی دور گذشته',
+              expectedImpactFa: 'پاسخ مستقیم به تجاوز یا بحران امنیتی',
             });
             ai.lastAttackedBy = null;
             continue;
@@ -569,11 +631,10 @@ export function runLivingWorldAITurn(
     if (
       (ai.aiPersonality === 'REGIONAL_HAWK' || ai.aiPersonality === 'SUPERPOWER') &&
       aiMilitaryActionsThisRound < maxWorldFlashpointAttacks &&
-      ai.treasuryB >= 70 &&
-      Math.random() < (diff === 'EXTREME' ? 0.3 : 0.2)
+      ai.treasuryB >= 65 &&
+      Math.random() < (diff === 'EXTREME' ? 0.34 : 0.24)
     ) {
-      // Try strategic minor nation expansion occasionally
-      if (Math.random() < 0.35) {
+      if (Math.random() < 0.38) {
         const reachableMinors = Object.values(room.minorNations).filter((m) => {
           if (m.conqueredBy === ai.id) return false;
           if (m.conqueredBy && ai.allies.includes(m.conqueredBy)) return false;
@@ -601,18 +662,17 @@ export function runLivingWorldAITurn(
         }
       }
 
-      // Rival operations (AI vs AI or AI vs Rival Player)
       const rivalPool = ALL_COUNTRY_IDS.filter(
         (cid) =>
           cid !== ai.id &&
           !room.countries[cid].isEliminated &&
           !ai.allies.includes(cid) &&
-          (ai.rivals.includes(cid) || ai.relations[cid] <= -45) &&
-          ((ai.nonAggressionPacts[cid] || 0) < room.round)
+          (ai.rivals.includes(cid) || ai.relations[cid] <= -42) &&
+          (ai.nonAggressionPacts[cid] || 0) < room.round
       );
       if (rivalPool.length > 0) {
         const rival = room.countries[rivalPool[Math.floor(Math.random() * rivalPool.length)]];
-        if (Math.random() < 0.6) {
+        if (Math.random() < 0.55) {
           const covChoices: CovertOpType[] = [
             'SAT_RECON',
             'PROXY_INSURGENCY',
@@ -667,38 +727,48 @@ export function runLivingWorldAITurn(
   }
 
   // =========================================================================
-  // 6. AUTONOMOUS AI-VS-AI POLITICS: DOSSIERS, RESOLUTIONS, COALITIONS & INVITES (Item #29!)
+  // 6. SMART, DEDUPLICATED UN SECURITY COUNCIL AI DIPLOMACY (v6.0 Item #6!)
   // =========================================================================
-
-  // 6a. AI Powers file UN Sanctions, IAEA Dossiers, or OPEC Votes against rivals!
-  if (room.resolutions.filter((r) => r.status === 'ACTIVE').length < 2 && Math.random() < 0.65) {
-    const activeAIs = aiCountries.filter((a) => a.aiPersonality === 'SUPERPOWER' || a.aiPersonality === 'REGIONAL_HAWK');
+  if (room.resolutions.filter((r) => r.status === 'ACTIVE').length < 2 && Math.random() < 0.72) {
+    const activeAIs = aiCountries.filter(
+      (a) => a.isUNVetoMember || a.aiPersonality === 'SUPERPOWER' || a.aiPersonality === 'REGIONAL_HAWK'
+    );
     if (activeAIs.length > 0) {
       const proposer = activeAIs[Math.floor(Math.random() * activeAIs.length)];
-      const enemyId = ALL_COUNTRY_IDS.find(
-        (id) =>
-          id !== proposer.id &&
-          !room.countries[id].isEliminated &&
-          (proposer.relations[id] <= -50 || id === runawayHegemonId)
-      );
+      // Prioritize aggressive expansionists or nuclear proliferators or runaway hegemons!
+      const candidates = ALL_COUNTRY_IDS.filter((id) => {
+        const c = room.countries[id];
+        if (id === proposer.id || c.isEliminated || proposer.allies.includes(id)) return false;
+        const alreadyTargeted = room.resolutions.some(
+          (r) => r.status === 'ACTIVE' && r.target === id
+        );
+        if (alreadyTargeted) return false;
+        const conqueredCount = Object.values(room.minorNations).filter((m) => m.conqueredBy === id).length;
+        return (
+          id === runawayHegemonId ||
+          conqueredCount >= 2 ||
+          proposer.relations[id] <= -48
+        );
+      });
 
-      if (enemyId) {
-        const enemy = room.countries[enemyId];
+      if (candidates.length > 0) {
+        const enemy = room.countries[candidates[0]];
+        const conqueredCount = Object.values(room.minorNations).filter((m) => m.conqueredBy === enemy.id).length;
         const kind: ResolutionKind =
           enemy.nuclearProgress >= 65 && enemy.warheads === 0
             ? 'IAEA_INSPECTION'
-            : Math.random() < 0.5
+            : conqueredCount >= 2
             ? 'CONDEMN_AGGRESSION'
             : 'GLOBAL_SANCTION';
 
         const titleFa =
           kind === 'IAEA_INSPECTION'
-            ? `تشکیل پرونده هسته‌ای در آژانس (IAEA) توسط ${proposer.nameFa} علیه ${enemy.nameFa}`
+            ? `پرونده بازرسی فوری آژانس (IAEA) به پیشنهاد ${proposer.nameFa} علیه برنامه هسته‌ای ${enemy.nameFa}`
             : kind === 'GLOBAL_SANCTION'
-            ? `پیش‌نویس قطعنامه تحریم شورای امنیت به پیشنهاد ${proposer.nameFa} علیه ${enemy.nameFa}`
-            : `بیانیه محکومیت تحرکات نظامی ${enemy.nameFa} در مجمع عمومی به پیشنهاد ${proposer.nameFa}`;
+            ? `قطعنامه تحریم فراگیر شورای امنیت به پیشنهاد ${proposer.nameFa} علیه ${enemy.nameFa}`
+            : `قطعنامه محکومیت توسعه‌طلبی نظامی ${enemy.nameFa} به پیشنهاد ${proposer.nameFa}`;
 
-        room.resolutions.unshift({
+        const newRes: UNResolution = {
           id: uid('un-ai'),
           round: room.round,
           proposer: proposer.id,
@@ -708,29 +778,34 @@ export function runLivingWorldAITurn(
           titleFa,
           effectSummaryFa:
             kind === 'IAEA_INSPECTION'
-              ? 'کاهش ۱۵٪ پیشرفت غنی‌سازی هدف در صورت تصویب.'
+              ? 'کاهش ۱۸٪ پیشرفت هسته‌ای و جریمه بانکی در صورت تصویب.'
               : kind === 'GLOBAL_SANCTION'
-              ? 'اعمال تحریم‌های چندجانبه علیه کشور هدف.'
-              : 'کاهش ۱۰٪ مشروعیت بین‌المللی کشور هدف.',
+              ? 'اعمال تحریم هماهنگ بانکی و تجاری توسط کشورهای موافق.'
+              : 'کاهش ۱۲٪ مشروعیت بین‌المللی و تضعیف روابط خارجی کشور هدف.',
           votesYes: [proposer.id],
           votesNo: [],
           vetoedBy: null,
+          vetoReasonFa: null,
           status: 'ACTIVE',
-        });
+        };
+        seedInitialAIStancesOnResolution(room, newRes);
+        room.resolutions.unshift(newRes);
 
         callbacks?.onAIPoliticalNews?.(
           'رویترز دیپلماتیک (نیویورک)',
-          `⚖️ اقدام سیاسی در سازمان ملل: ${titleFa}`,
-          `سفیر ${proposer.nameFa} با تشکیل پرونده رسمی خواستار رای‌گیری فوری کشورهای عضو علیه ${enemy.nameFa} شد.`,
+          `⚖️ نشست اضطراری سازمان ملل: ${titleFa}`,
+          `سفیر ${proposer.nameFa} پیش‌نویس قطعنامه را روی میز شورای امنیت گذاشت و رایزنی برای کسب آرا یا وتو آغاز شد.`,
           [proposer.id, enemy.id]
         );
       }
     }
   }
 
-  // 6b. AI Forms New Regional Coalition (e.g. Global South / BRICS+) & Invites Players/AI!
+  // 6b. BRICS+ Formation on Round 3
   if (room.round === 3 && !room.coalitions['coalition-brics']) {
-    const founder = ['IN', 'BR', 'SA'].map((id) => room.countries[id as CountryId]).find((c) => c && !c.playerId && !c.isEliminated && !c.coalitionId);
+    const founder = ['IN', 'BR', 'SA']
+      .map((id) => room.countries[id as CountryId])
+      .find((c) => c && !c.playerId && !c.isEliminated && !c.coalitionId);
     if (founder) {
       room.coalitions['coalition-brics'] = {
         id: 'coalition-brics',
@@ -750,19 +825,19 @@ export function runLivingWorldAITurn(
       }
       callbacks?.onAIPoliticalNews?.(
         'الجزیره / شین‌هوا',
-        `🛡️ تاسیس ائتلاف جدید توسط هوش مصنوعی: «پیمان جنوب جهانی (بریکس+)» به رهبری ${founder.nameFa} اعلام موجودیت کرد!`,
-        'قدرت‌های نوظهور برای حفظ موازنه جهانی پیمان مشترک تشکیل دادند و از سایر کشورها دعوت به همکاری کردند.',
+        `🛡️ تاسیس ائتلاف جدید جهانی: «پیمان جنوب جهانی (بریکس+)» به رهبری ${founder.nameFa} اعلام موجودیت کرد!`,
+        'قدرت‌های نوظهور برای حفظ موازنه جهانی پیمان مشترک تشکیل دادند.',
         [founder.id]
       );
     }
   }
 
-  // 6c. AI Coalition Leaders Invite Friendly Unaligned Human Players & Post Public Stances!
+  // 6c. Coalition Invites to Friendly Humans
   for (const coal of Object.values(room.coalitions)) {
     const leader = room.countries[coal.leader];
     if (!leader || leader.playerId !== null || leader.isEliminated) continue;
     for (const hum of humanCountries) {
-      if (!hum.coalitionId && leader.relations[hum.id] >= 20 && !coal.invited.includes(hum.id) && Math.random() < 0.35) {
+      if (!hum.coalitionId && leader.relations[hum.id] >= 22 && !coal.invited.includes(hum.id) && Math.random() < 0.35) {
         coal.invited.push(hum.id);
         room.messages.push({
           id: uid('ai-inv'),
@@ -777,31 +852,13 @@ export function runLivingWorldAITurn(
     }
   }
 
-  // 6d. AI-vs-AI Public Political Stances in UN Hall
-  if (aiCountries.length >= 2 && Math.random() < 0.65) {
-    const speaker = aiCountries[Math.floor(Math.random() * aiCountries.length)];
-    const rivalId = speaker.rivals.find((rid) => !room.countries[rid]?.isEliminated);
-    if (speaker && rivalId) {
-      const rival = room.countries[rivalId];
-      room.messages.push({
-        id: uid('ai-stance'),
-        timestamp: Date.now(),
-        channel: 'GLOBAL',
-        fromCountry: speaker.id,
-        fromName: `${speaker.nameFa} (نمایندگی سازمان ملل)`,
-        text: `ما نسبت به گسترش تسلیحات و اقدامات بی‌ثبات‌کننده «${rival.nameFa}» در منطقه هشدار می‌دهیم و از جامعه جهانی می‌خواهیم در برابر آن موضع بگیرد.`,
-      });
-      if (room.messages.length > 150) room.messages.shift();
-    }
-  }
-
-  // 7. Proactive Bilateral Trade Offers to Human Players
+  // 7. Proactive Bilateral Trade Offers (Realistic Pricing!)
   for (const human of humanCountries) {
     const alreadyHasPending = room.trades.some(
       (t) => t.status === 'PENDING' && t.to === human.id
     );
-    if (!alreadyHasPending && Math.random() < 0.55) {
-      if (human.oilReserve >= 220) {
+    if (!alreadyHasPending && Math.random() < 0.45) {
+      if (human.oilReserve >= 240) {
         const buyerAI = aiCountries.find(
           (a) =>
             (a.id === 'CN' || a.id === 'DE' || a.id === 'JP' || a.id === 'IN' || a.id === 'FR') &&
@@ -809,22 +866,24 @@ export function runLivingWorldAITurn(
             a.treasuryB >= 55
         );
         if (buyerAI) {
-          const offerPrice = Math.round(30 * (room.market.oilPriceUsd / 82));
+          const offerPrice = Math.max(12, Math.round(18 * (room.market.oilPriceUsd / 82)));
           room.trades.unshift({
             id: uid('ai-offer'),
             round: room.round,
             from: buyerAI.id,
             to: human.id,
             offerType: 'OIL',
-            amount: 60,
+            amount: 55,
             priceB: offerPrice,
             direction: 'BUY',
-            noteFa: `پیشنهاد خرید فوری ۶۰ واحد نفت خام`,
+            noteFa: `قرارداد خرید ۵۵ واحد نفت خام با نرخ دوجانبه`,
             status: 'PENDING',
           });
         }
-      } else if (human.foodReserve < 70) {
-        const foodSeller = aiCountries.find((a) => (a.id === 'BR' || a.id === 'RU' || a.id === 'CA') && a.foodReserve >= 140);
+      } else if (human.foodReserve < 65) {
+        const foodSeller = aiCountries.find(
+          (a) => (a.id === 'BR' || a.id === 'RU' || a.id === 'CA') && a.foodReserve >= 140
+        );
         if (foodSeller) {
           room.trades.unshift({
             id: uid('ai-food'),
@@ -832,10 +891,10 @@ export function runLivingWorldAITurn(
             from: foodSeller.id,
             to: human.id,
             offerType: 'FOOD',
-            amount: 60,
-            priceB: 18,
+            amount: 55,
+            priceB: 16,
             direction: 'SELL',
-            noteFa: `پیشنهاد تامین فوری ۶۰ واحد گندم و مواد غذایی`,
+            noteFa: `پیشنهاد تامین فوری ۵۵ واحد گندم و غلات`,
             status: 'PENDING',
           });
         }
@@ -844,13 +903,84 @@ export function runLivingWorldAITurn(
   }
 }
 
-export function castAIVotesOnResolution(room: GameRoomState, res: UNResolution): void {
+/**
+ * Casts immediate initial stances of key blocs when a resolution is tabled,
+ * so the UN chamber immediately looks alive while leaving undecided swing states & final veto evaluation for round end!
+ */
+export function seedInitialAIStancesOnResolution(room: GameRoomState, res: UNResolution): void {
+  const target = room.countries[res.target];
+  if (!target) return;
   for (const c of Object.values(room.countries)) {
     if (c.playerId !== null || c.isEliminated) continue;
     if (res.votesYes.includes(c.id) || res.votesNo.includes(c.id)) continue;
 
+    if (res.kind === 'OPEC_OIL_CUT' && c.oilProduction >= 85) {
+      res.votesYes.push(c.id);
+    } else if (res.kind === 'OPEC_OIL_BOOST' && c.oilConsumption > c.oilProduction + 25) {
+      res.votesYes.push(c.id);
+    } else if (c.id === res.target || c.allies.includes(res.target)) {
+      res.votesNo.push(c.id);
+    } else if (c.allies.includes(res.proposer) && (c.relations[res.target] ?? 0) < 0) {
+      res.votesYes.push(c.id);
+    }
+  }
+}
+
+/**
+ * Smart, Bug-Free UN Voting & P5 Veto Engine (v6.0 Item #6):
+ * Evaluates alliances, secret pacts, coalition solidarity, oil import dependency, and recent aggression!
+ */
+export function castAIVotesOnResolution(room: GameRoomState, res: UNResolution): void {
+  const target = room.countries[res.target];
+  const proposer = room.countries[res.proposer];
+  if (!target || !proposer) return;
+
+  const vetoEligible =
+    res.kind === 'GLOBAL_SANCTION' ||
+    res.kind === 'CONDEMN_AGGRESSION' ||
+    res.kind === 'IAEA_INSPECTION';
+
+  for (const c of Object.values(room.countries)) {
+    if (c.playerId !== null || c.isEliminated) continue;
+
+    const relToTarget = c.relations[res.target] ?? 0;
+    const relToProposer = c.relations[res.proposer] ?? 0;
+    const wasAttackedByTarget = c.lastAttackedBy === res.target;
+
+    // Smart P5 Veto Check (runs even if initial No vote was already seeded!)
+    if (c.isUNVetoMember && vetoEligible && !res.vetoedBy && !wasAttackedByTarget && c.id !== res.proposer) {
+      let vetoReason: string | null = null;
+      if (c.id === res.target) {
+        vetoReason = `دفاع از حاکمیت ملی و منافع حیاتی ${c.nameFa}`;
+      } else if (c.allies.includes(res.target) || c.secretAllies?.includes(res.target)) {
+        vetoReason = `پیمان هم‌پیمانی راهبردی با ${target.nameFa}`;
+      } else if (c.coalitionId && c.coalitionId === target.coalitionId && relToTarget >= 20) {
+        vetoReason = `همبستگی بلوک ائتلافی در حمایت از ${target.nameFa}`;
+      } else if (relToTarget >= 45 && relToProposer <= 10) {
+        vetoReason = `مخالفت با فشار سیاسی بلوک رقیب علیه شریک راهبردی (${target.nameFa})`;
+      } else if (
+        res.kind === 'GLOBAL_SANCTION' &&
+        c.oilConsumption > c.oilProduction + 25 &&
+        target.oilProduction >= 90 &&
+        relToTarget >= 15
+      ) {
+        vetoReason = `حفاظت از امنیت واردات انرژی از ${target.nameFa}`;
+      }
+
+      if (vetoReason) {
+        res.votesYes = res.votesYes.filter((id) => id !== c.id);
+        if (!res.votesNo.includes(c.id)) res.votesNo.push(c.id);
+        res.vetoedBy = c.id;
+        res.vetoReasonFa = vetoReason;
+        res.status = 'VETOED';
+        continue;
+      }
+    }
+
+    if (res.votesYes.includes(c.id) || res.votesNo.includes(c.id)) continue;
+
     if (res.kind === 'OPEC_OIL_CUT') {
-      if (c.oilProduction > c.oilConsumption + 15) res.votesYes.push(c.id);
+      if (c.oilProduction > c.oilConsumption + 10) res.votesYes.push(c.id);
       else res.votesNo.push(c.id);
       continue;
     }
@@ -860,29 +990,21 @@ export function castAIVotesOnResolution(room: GameRoomState, res: UNResolution):
       continue;
     }
     if (res.kind === 'EMERGENCY_AID_PACKAGE') {
-      if (c.relations[res.target] <= -40) res.votesNo.push(c.id);
+      if (relToTarget <= -35) res.votesNo.push(c.id);
       else res.votesYes.push(c.id);
       continue;
     }
 
-    if (c.id === res.target || c.allies.includes(res.target) || c.relations[res.target] >= 50) {
+    if (c.id === res.target || c.allies.includes(res.target) || relToTarget >= 38) {
       res.votesNo.push(c.id);
-      const vetoEligible =
-        res.kind === 'GLOBAL_SANCTION' ||
-        res.kind === 'CONDEMN_AGGRESSION' ||
-        res.kind === 'IAEA_INSPECTION';
-      if (c.isUNVetoMember && vetoEligible && !res.vetoedBy) {
-        res.vetoedBy = c.id;
-        res.status = 'VETOED';
-      }
       continue;
     }
 
-    if (c.relations[res.proposer] >= 40 || c.relations[res.target] <= -35) {
+    if (wasAttackedByTarget || relToTarget <= -25 || (relToProposer >= 35 && relToTarget < 15)) {
       res.votesYes.push(c.id);
     } else if (res.kind === 'CEASEFIRE_DEMAND') {
       res.votesYes.push(c.id);
-    } else if (Math.random() < 0.52) {
+    } else if (relToProposer > relToTarget + 10) {
       res.votesYes.push(c.id);
     } else {
       res.votesNo.push(c.id);
